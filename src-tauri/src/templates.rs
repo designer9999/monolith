@@ -296,7 +296,7 @@ pub fn catalog() -> Vec<Template> {
             mono: "AP",
             slug: Some("apple"),
             icon: None,
-            color: "#e8edf2",
+            color: "#f5f5f7",
             totp: false,
             group: "Personal",
             fields: vec![
@@ -314,7 +314,7 @@ pub fn catalog() -> Vec<Template> {
             mono: "M",
             slug: Some("mega"),
             icon: None,
-            color: "#ff4f4f",
+            color: "#d9272e",
             totp: true,
             group: "Personal",
             fields: vec![
@@ -329,7 +329,7 @@ pub fn catalog() -> Vec<Template> {
             name: "Topaz",
             mono: "TZ",
             slug: None,
-            icon: Some("layers"),
+            icon: Some("gem"),
             color: "#5b9dff",
             totp: false,
             group: "Personal",
@@ -362,7 +362,7 @@ pub fn catalog() -> Vec<Template> {
             mono: "IG",
             slug: Some("instagram"),
             icon: None,
-            color: "#ff5aa5",
+            color: "#ff0069",
             totp: true,
             group: "Personal",
             fields: vec![

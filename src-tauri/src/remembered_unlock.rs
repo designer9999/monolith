@@ -14,7 +14,9 @@ use crate::vault::crypto;
 pub const LOCAL_DEVICE_ID: &str = "local_desktop_session";
 
 const CREDENTIAL_VERSION: u8 = 1;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const SERVICE: &str = "MONOLITH";
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const ACCOUNT_PREFIX: &str = "vault-session:";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

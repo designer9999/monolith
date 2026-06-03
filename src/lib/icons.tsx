@@ -45,6 +45,7 @@ const ICONS: Record<string, string> = {
   img: "M3 5h18v14H3zM3 16l5-5 4 4 3-3 6 6M9 9a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0",
   trash: "M5 7h14M9 7V4h6v3M6 7l1 14h10l1-14",
   more: "M5 12h.01M12 12h.01M19 12h.01",
+  gem: "M6 4h12l4 6-10 12L2 10zM2 10h20M7 4l5 18M17 4l-5 18M7 4l-5 6M17 4l5 6",
 };
 
 type IconName = keyof typeof ICONS | string;

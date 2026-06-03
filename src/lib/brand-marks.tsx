@@ -9,10 +9,14 @@
  */
 
 import {
+  siApple,
   siClaude,
   siCloudflare,
   siGithub,
   siGoogle,
+  siHuggingface,
+  siInstagram,
+  siMega,
   siPostgresql,
   siPrisma,
   siResend,
@@ -30,9 +34,13 @@ interface BrandIcon {
 
 /** template slug → Simple Icons data. */
 const MARKS: Record<string, BrandIcon> = {
+  apple: siApple,
   supabase: siSupabase,
   google: siGoogle,
   github: siGithub,
+  huggingface: siHuggingface,
+  instagram: siInstagram,
+  mega: siMega,
   vercel: siVercel,
   stripe: siStripe,
   cloudflare: siCloudflare,
