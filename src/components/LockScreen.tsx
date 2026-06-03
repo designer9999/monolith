@@ -18,6 +18,7 @@ export interface LockScreenProps {
 
 export function LockScreen({ onUnlock, count }: LockScreenProps) {
   const [pw, setPw] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
@@ -66,7 +67,7 @@ export function LockScreen({ onUnlock, count }: LockScreenProps) {
           <Icon name="key" size={15} className="text-acc" />
           <input
             ref={ref}
-            type="password"
+            type={showPw ? "text" : "password"}
             value={pw}
             onChange={(e) => {
               setPw(e.target.value);
@@ -76,6 +77,14 @@ export function LockScreen({ onUnlock, count }: LockScreenProps) {
             aria-invalid={!!error}
             className="flex-1 border-none bg-transparent font-mono text-sm tracking-[0.2em] text-txt outline-none placeholder:text-txt-4"
           />
+          <button
+            type="button"
+            onClick={() => setShowPw((visible) => !visible)}
+            className="grid size-8 place-items-center border border-line bg-bg-2 text-txt-2 transition-colors hover:border-acc hover:text-acc"
+            aria-label={showPw ? "Hide master password" : "Show master password"}
+          >
+            <Icon name={showPw ? "eyeoff" : "eye"} size={15} />
+          </button>
         </div>
 
         {error && (

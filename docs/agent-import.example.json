@@ -29,6 +29,7 @@
       "label": "nimbus-web",
       "fields": [
         { "label": "Username", "value": "example-user" },
+        { "label": "Account Email", "value": "you@example.com" },
         { "label": "Personal Access Token", "value": "ghp_example" }
       ]
     }

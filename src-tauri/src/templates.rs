@@ -118,6 +118,7 @@ pub fn catalog() -> Vec<Template> {
             group: "Dev",
             fields: vec![
                 F::new("Username", false),
+                F::new("Account Email", false).ty(Email),
                 F::new("Personal Access Token", true).danger().ty(ApiKey),
                 F::new("SSH Private Key", true).area(),
                 F::new("Webhook Secret", true),

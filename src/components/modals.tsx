@@ -6,7 +6,7 @@
  * it can drive `addService` / `createProject`.
  */
 
-import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 
 import { listTemplates, revealField } from "@/lib/tauri";
 import type {
@@ -21,6 +21,7 @@ import type {
 } from "@/lib/types";
 import { Icon } from "@/lib/icons";
 import { EXPIRATION_PRESETS, formatDateOnly, isoDateAfter } from "@/lib/expiration";
+import { fetchGitHubTokenProfile } from "@/lib/github-autofill";
 import { decodeTotpQrImage, extractTotpSecret } from "@/lib/totp-qr";
 import { ServiceMark } from "@/lib/ui";
 import { Btn } from "@/components/ui/btn";
@@ -234,6 +235,9 @@ export function ServiceCatalog({
   const [loading, setLoading] = useState(!templates);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [githubMessage, setGithubMessage] = useState<string | null>(null);
+  const [githubError, setGithubError] = useState<string | null>(null);
 
   useEffect(() => {
     if (templates) {
@@ -259,6 +263,12 @@ export function ServiceCatalog({
     };
   }, [templates]);
 
+  useEffect(() => {
+    setGithubBusy(false);
+    setGithubMessage(null);
+    setGithubError(null);
+  }, [sel?.id]);
+
   const filtered = list.filter(
     (t) =>
       !q ||
@@ -272,6 +282,27 @@ export function ServiceCatalog({
 
   if (sel) {
     const t = sel;
+    const fetchGithub = async () => {
+      if (githubBusy) return;
+      setGithubBusy(true);
+      setGithubError(null);
+      setGithubMessage(null);
+      try {
+        const profile = await fetchGitHubTokenProfile(vals["Personal Access Token"] || "");
+        setVals((current) => ({
+          ...current,
+          __label: current.__label || profile.login,
+          Username: profile.login,
+          ...(profile.email ? { "Account Email": profile.email } : {}),
+        }));
+        const scopeLabel = profile.scopes.length ? ` · ${profile.scopes.join(", ")}` : "";
+        setGithubMessage(`Fetched ${profile.login}${scopeLabel}`);
+      } catch (err) {
+        setGithubError((err as Error)?.message ?? "Could not fetch GitHub account.");
+      } finally {
+        setGithubBusy(false);
+      }
+    };
     const submit = async () => {
       if (submitting) return;
       const fields: ServiceFieldInput[] = t.fields
@@ -339,15 +370,25 @@ export function ServiceCatalog({
           <EnvironmentPicker value={env} onChange={setEnv} />
           <ExpirationPicker value={expiresAt} onChange={setExpiresAt} />
           {t.fields.map((f) => (
-            <FormField
-              key={f.label}
-              label={f.label}
-              secret={f.secret}
-              area={f.area}
-              value={vals[f.label] || ""}
-              onChange={(v) => setVals((s) => ({ ...s, [f.label]: v }))}
-              placeholder={"enter " + f.label.toLowerCase()}
-            />
+            <Fragment key={f.label}>
+              <FormField
+                label={f.label}
+                secret={f.secret}
+                area={f.area}
+                value={vals[f.label] || ""}
+                onChange={(v) => setVals((s) => ({ ...s, [f.label]: v }))}
+                placeholder={"enter " + f.label.toLowerCase()}
+              />
+              {t.id === "github" && f.label === "Personal Access Token" && (
+                <GitHubAutofillPanel
+                  busy={githubBusy}
+                  message={githubMessage}
+                  error={githubError}
+                  disabled={!vals["Personal Access Token"]?.trim()}
+                  onFetch={fetchGithub}
+                />
+              )}
+            </Fragment>
           ))}
           {t.totp && (
             <div className="mt-1.5">
@@ -456,6 +497,9 @@ export function EditService({
   const [submitting, setSubmitting] = useState(false);
   const [loadingSecrets, setLoadingSecrets] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [githubMessage, setGithubMessage] = useState<string | null>(null);
+  const [githubError, setGithubError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -515,6 +559,28 @@ export function EditService({
     }
   };
 
+  const fetchGithub = async () => {
+    if (githubBusy) return;
+    setGithubBusy(true);
+    setGithubError(null);
+    setGithubMessage(null);
+    try {
+      const profile = await fetchGitHubTokenProfile(vals["Personal Access Token"] || "");
+      setLabel((current) => (current.trim() ? current : profile.login));
+      setVals((current) => ({
+        ...current,
+        Username: profile.login,
+        ...(profile.email ? { "Account Email": profile.email } : {}),
+      }));
+      const scopeLabel = profile.scopes.length ? ` · ${profile.scopes.join(", ")}` : "";
+      setGithubMessage(`Fetched ${profile.login}${scopeLabel}`);
+    } catch (err) {
+      setGithubError((err as Error)?.message ?? "Could not fetch GitHub account.");
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
   return (
     <Modal
       title="Edit service"
@@ -552,16 +618,26 @@ export function EditService({
         <EnvironmentPicker value={env} onChange={setEnv} />
         <ExpirationPicker value={expiresAt} onChange={setExpiresAt} />
         {service.fields.map((field) => (
-          <FormField
-            key={field.id}
-            label={field.label}
-            secret={field.secret}
-            area={field.area}
-            initiallyRevealed={field.secret ? revealSecretsByDefault : false}
-            value={vals[field.label] || ""}
-            onChange={(value) => setVals((s) => ({ ...s, [field.label]: value }))}
-            placeholder={field.secret ? (field.hasValue ? "leave unchanged" : "set value") : ""}
-          />
+          <Fragment key={field.id}>
+            <FormField
+              label={field.label}
+              secret={field.secret}
+              area={field.area}
+              initiallyRevealed={field.secret ? revealSecretsByDefault : false}
+              value={vals[field.label] || ""}
+              onChange={(value) => setVals((s) => ({ ...s, [field.label]: value }))}
+              placeholder={field.secret ? (field.hasValue ? "leave unchanged" : "set value") : ""}
+            />
+            {service.templateId === "github" && field.label === "Personal Access Token" && (
+              <GitHubAutofillPanel
+                busy={githubBusy}
+                message={githubMessage}
+                error={githubError}
+                disabled={!vals["Personal Access Token"]?.trim()}
+                onFetch={fetchGithub}
+              />
+            )}
+          </Fragment>
         ))}
         {service.totp && (
           <FormField
@@ -576,6 +652,37 @@ export function EditService({
         )}
       </div>
     </Modal>
+  );
+}
+
+function GitHubAutofillPanel({
+  busy,
+  message,
+  error,
+  disabled,
+  onFetch,
+}: {
+  busy: boolean;
+  message: string | null;
+  error: string | null;
+  disabled: boolean;
+  onFetch: () => void | Promise<void>;
+}) {
+  return (
+    <div className="mb-3.5 flex flex-wrap items-center gap-2 border border-line-2 bg-bg px-3 py-2.5">
+      <Btn type="button" variant="ghost" onClick={() => void onFetch()} disabled={busy || disabled}>
+        <Icon name="refresh" size={13} /> {busy ? "Fetching..." : "Fetch GitHub account"}
+      </Btn>
+      <div className="min-w-0 flex-1 font-mono text-[10px] uppercase tracking-[0.08em]">
+        {error ? (
+          <span className="text-danger">{error}</span>
+        ) : message ? (
+          <span className="text-acc">{message}</span>
+        ) : (
+          <span className="text-txt-4">Uses pasted token once</span>
+        )}
+      </div>
+    </div>
   );
 }
 

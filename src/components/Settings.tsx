@@ -224,7 +224,7 @@ export function Settings({
     ["dialog · open / save", false],
     ["shell · execute", false],
     ["fs · arbitrary read / write", false],
-    ["http · remote requests", false],
+    ["github api · token autofill", true],
     ["updater · signed GitHub releases", !isMobile],
     ["barcode scanner · mobile only", true],
   ];
@@ -536,7 +536,7 @@ export function Settings({
           </div>
           <SettingRow
             label="Strict Content-Security-Policy"
-            desc="No remote scripts. connect-src limited to local IPC. Inline styles are allowed for data-driven UI colors."
+            desc="No remote scripts. connect-src is limited to local IPC and GitHub API token autofill. Inline styles are allowed for data-driven UI colors."
           >
             <Chip tone="accent">RESTRICTED</Chip>
           </SettingRow>
@@ -796,7 +796,7 @@ export function Settings({
         <section>
           <SectionHead icon="gear" title="About" />
           <div className="mb-[18px] grid grid-cols-1 gap-px bg-line min-[430px]:grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(160px,1fr))]">
-            <KV k="Version" v="0.1.1 · release" />
+            <KV k="Version" v="0.1.2 · release" />
             <KV k="Engine" v="Tauri 2 · Rust 2021" />
             <KV k="UI" v="React · TypeScript" />
             <KV k="Store" v="rusqlite · SQLite" />

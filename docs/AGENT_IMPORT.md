@@ -59,7 +59,7 @@ Use these `templateId` values:
 Field labels must match the selected template. Useful common mappings:
 
 - `login`: `URL`, `Email / Username`, `Password`
-- `github`: `Username`, `Personal Access Token`, `SSH Private Key`, `Webhook Secret`, `OAuth Client ID`, `OAuth Secret`
+- `github`: `Username`, `Account Email`, `Personal Access Token`, `SSH Private Key`, `Webhook Secret`, `OAuth Client ID`, `OAuth Secret`
 - `zeroid`: `Client ID`, `Client Secret`, `Issuer URL`, `Account Email`
 - `openai`: `API Key`, `Organization ID`, `Project ID`
 - `vercel`: `Account Email`, `Access Token`, `Team ID`, `Project ID`, `Deploy Hook URL`
