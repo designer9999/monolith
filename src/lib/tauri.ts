@@ -56,6 +56,7 @@ export const createVault = (masterPassword: string, seedDemo: boolean) =>
   cmd<VaultStatus>("create_vault", { masterPassword, seedDemo });
 export const unlockVault = (masterPassword: string) =>
   cmd<VaultStatus>("unlock_vault", { masterPassword });
+export const restoreRememberedUnlock = () => cmd<VaultStatus>("restore_remembered_unlock");
 export const lockVault = () => cmd<void>("lock_vault");
 
 // --- reads ---

@@ -12,6 +12,7 @@ mod db;
 mod error;
 mod models;
 mod pairing;
+mod remembered_unlock;
 mod seed;
 mod state;
 mod strength;
@@ -50,6 +51,7 @@ pub fn run() {
             commands::app_platform,
             commands::create_vault,
             commands::unlock_vault,
+            commands::restore_remembered_unlock,
             commands::lock_vault,
             commands::list_projects,
             commands::list_services,

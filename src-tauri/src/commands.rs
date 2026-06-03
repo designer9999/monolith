@@ -11,6 +11,7 @@ use crate::db::repo;
 use crate::error::{AppError, AppResult};
 use crate::models::*;
 use crate::pairing;
+use crate::remembered_unlock;
 use crate::state::AppState;
 use crate::templates::{self, Template};
 use crate::vault::{self, crypto, VaultKey};
@@ -90,6 +91,11 @@ pub fn create_vault(
         let (header, key) = vault::create(&secret)?;
         repo::initialize_vault(&inner.conn, &header, &key, seed_demo)?;
         repo::ensure_personal_project(&inner.conn)?;
+        remember_unlock_session(
+            &inner.conn,
+            &key,
+            repo::app_settings(&inner.conn)?.auto_lock_ms,
+        )?;
         let item_count = repo::item_count(&inner.conn)?;
         inner.key = Some(key);
         Ok(VaultStatus {
@@ -110,6 +116,11 @@ pub fn unlock_vault(master_password: String, state: State<'_, AppState>) -> AppR
             .ok_or_else(|| AppError::VaultState("No vault to unlock".into()))?;
         let key = vault::unlock(&secret, &header)?;
         repo::ensure_personal_project(&inner.conn)?;
+        remember_unlock_session(
+            &inner.conn,
+            &key,
+            repo::app_settings(&inner.conn)?.auto_lock_ms,
+        )?;
         let item_count = repo::item_count(&inner.conn)?;
         inner.key = Some(key);
         Ok(VaultStatus {
@@ -121,10 +132,73 @@ pub fn unlock_vault(master_password: String, state: State<'_, AppState>) -> AppR
     })
 }
 
+/// Restore a still-valid local remembered unlock session from the OS
+/// credential manager. This never stores or uses the master password.
+#[tauri::command]
+pub fn restore_remembered_unlock(state: State<'_, AppState>) -> AppResult<VaultStatus> {
+    state.with(|inner| {
+        let initialized = crate::db::is_initialized(&inner.conn)?;
+        if !initialized {
+            return Ok(VaultStatus {
+                initialized: false,
+                unlocked: false,
+                item_count: 0,
+                vault_id: None,
+            });
+        }
+        if inner.key.is_some() {
+            return Ok(VaultStatus {
+                initialized: true,
+                unlocked: true,
+                item_count: repo::item_count(&inner.conn)?,
+                vault_id: repo::vault_id(&inner.conn)?,
+            });
+        }
+
+        let Some(vault_id) = repo::vault_id(&inner.conn)? else {
+            return Err(AppError::VaultState("Vault id is missing".into()));
+        };
+        let Some(device_key) = remembered_unlock::load_device_key(&vault_id).unwrap_or_default()
+        else {
+            return Ok(VaultStatus {
+                initialized: true,
+                unlocked: false,
+                item_count: 0,
+                vault_id: Some(vault_id),
+            });
+        };
+        let vault_key = match repo::load_device_unlock(&inner.conn, &device_key) {
+            Ok(Some(vault_key)) => vault_key,
+            Ok(None) | Err(AppError::BadPassword) | Err(AppError::Crypto(_)) => {
+                remembered_unlock::clear(&vault_id).ok();
+                return Ok(VaultStatus {
+                    initialized: true,
+                    unlocked: false,
+                    item_count: 0,
+                    vault_id: Some(vault_id),
+                });
+            }
+            Err(err) => return Err(err),
+        };
+        let settings = repo::app_settings(&inner.conn)?;
+        remembered_unlock::refresh(&vault_id, settings.auto_lock_ms).ok();
+        inner.key = Some(VaultKey::from_bytes(vault_key));
+        Ok(VaultStatus {
+            initialized: true,
+            unlocked: true,
+            item_count: repo::item_count(&inner.conn)?,
+            vault_id: Some(vault_id),
+        })
+    })
+}
+
 /// Lock the vault: drop and zeroize the in-memory key.
 #[tauri::command]
 pub fn lock_vault(state: State<'_, AppState>) -> AppResult<()> {
     state.with(|inner| {
+        if let Some(vault_id) = repo::vault_id(&inner.conn)? {
+            remembered_unlock::clear(&vault_id).ok();
+        }
         inner.key = None; // VaultKey::drop zeroizes
         Ok(())
     })
@@ -498,7 +572,11 @@ pub fn update_app_settings(
     input: UpdateAppSettingsInput,
     state: State<'_, AppState>,
 ) -> AppResult<AppSettings> {
-    state.with_unlocked(|conn, _key| repo::update_app_settings(conn, &input))
+    state.with_unlocked(|conn, key| {
+        let settings = repo::update_app_settings(conn, &input)?;
+        remember_unlock_session(conn, key, settings.auto_lock_ms)?;
+        Ok(settings)
+    })
 }
 
 // --- local QR pairing ---
@@ -623,6 +701,11 @@ pub fn complete_pairing(
         repo::check_schema(&conn)?;
         repo::store_device_unlock(&conn, &device_id, &device_key, &vault_key)?;
         repo::ensure_personal_project(&conn)?;
+        remembered_unlock::save(
+            &package.vault_id,
+            &device_key,
+            repo::app_settings(&conn)?.auto_lock_ms,
+        )?;
         let item_count = repo::item_count(&conn)?;
         inner.conn = conn;
         inner.key = Some(VaultKey::from_bytes(vault_key));
@@ -643,6 +726,11 @@ pub fn unlock_device_vault(
         let device_key = pairing::bytes32_from_b64(device_key.trim(), "device key")?;
         let vault_key = repo::load_device_unlock(&inner.conn, &device_key)?
             .ok_or_else(|| AppError::VaultState("No paired device unlock is stored".into()))?;
+        remember_unlock_session(
+            &inner.conn,
+            &VaultKey::from_bytes(vault_key),
+            repo::app_settings(&inner.conn)?.auto_lock_ms,
+        )?;
         inner.key = Some(VaultKey::from_bytes(vault_key));
         Ok(VaultStatus {
             initialized: true,
@@ -651,4 +739,35 @@ pub fn unlock_device_vault(
             vault_id: repo::vault_id(&inner.conn)?,
         })
     })
+}
+
+fn remember_unlock_session(
+    conn: &rusqlite::Connection,
+    key: &VaultKey,
+    auto_lock_ms: Option<i64>,
+) -> AppResult<()> {
+    if let Err(err) = remember_unlock_session_inner(conn, key, auto_lock_ms) {
+        eprintln!("remembered unlock unavailable: {err}");
+    }
+    Ok(())
+}
+
+fn remember_unlock_session_inner(
+    conn: &rusqlite::Connection,
+    key: &VaultKey,
+    auto_lock_ms: Option<i64>,
+) -> AppResult<()> {
+    let vault_id =
+        repo::vault_id(conn)?.ok_or_else(|| AppError::VaultState("Vault id is missing".into()))?;
+    let device_key = match remembered_unlock::load_device_key(&vault_id)? {
+        Some(existing) => existing,
+        None => crypto::random_key()?,
+    };
+    repo::store_device_unlock(
+        conn,
+        remembered_unlock::LOCAL_DEVICE_ID,
+        &device_key,
+        key.expose(),
+    )?;
+    remembered_unlock::save(&vault_id, &device_key, auto_lock_ms)
 }

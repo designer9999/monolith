@@ -152,7 +152,7 @@ export interface Storage {
 }
 
 export interface AppSettings {
-  /** Undefined means "never auto-lock while this app process remains alive." */
+  /** Undefined means "do not expire the remembered local unlock session automatically." */
   autoLockMs?: number;
   revealSecretsByDefault: boolean;
   clipboardClearMs: number;

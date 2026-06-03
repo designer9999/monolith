@@ -47,6 +47,9 @@ async function githubJson<T>(path: string, token: string): Promise<{ data: T; he
   });
   const data = (await response.json().catch(() => ({}))) as T & { message?: string };
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("Token was rejected by GitHub. Paste the full active token.");
+    }
     throw new Error(data.message || `GitHub request failed with ${response.status}.`);
   }
   return { data, headers: response.headers };

@@ -244,7 +244,7 @@ pub struct Storage {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
-    /// Null means "never auto-lock while the app process stays alive".
+    /// Null means "do not expire the remembered local unlock session automatically".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_lock_ms: Option<i64>,
     pub reveal_secrets_by_default: bool,

@@ -473,7 +473,7 @@ export function Settings({
           </SettingRow>
           <SettingRow
             label="Auto-lock session"
-            desc="Lock after inactivity and zeroize the in-memory vault key. A full app quit still requires the master password on next launch."
+            desc="Lock after inactivity and expire the remembered local unlock session. Never keeps this Windows login trusted until you lock manually."
           >
             <div className="flex items-center gap-2.5">
               <Segmented

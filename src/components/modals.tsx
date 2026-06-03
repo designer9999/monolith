@@ -21,7 +21,13 @@ import type {
 } from "@/lib/types";
 import { Icon } from "@/lib/icons";
 import { EXPIRATION_PRESETS, formatDateOnly, isoDateAfter } from "@/lib/expiration";
-import { fetchGitHubTokenProfile } from "@/lib/github-autofill";
+import {
+  credentialAssistFor,
+  credentialFieldHint,
+  credentialPlaceholder,
+  runCredentialAutofill,
+  type CredentialAutofillResult,
+} from "@/lib/credential-autofill";
 import { decodeTotpQrImage, extractTotpSecret } from "@/lib/totp-qr";
 import { ServiceMark } from "@/lib/ui";
 import { Btn } from "@/components/ui/btn";
@@ -43,6 +49,30 @@ const ENV_LABEL: Record<Environment, string> = {
   dev: "DEV",
   all: "ALL ENV",
 };
+
+type AssistState = {
+  field: string | null;
+  busy: boolean;
+  message: string | null;
+  note: string | null;
+  error: string | null;
+};
+
+const EMPTY_ASSIST: AssistState = {
+  field: null,
+  busy: false,
+  message: null,
+  note: null,
+  error: null,
+};
+
+function applyAutofillValues(
+  current: Record<string, string>,
+  result: CredentialAutofillResult,
+): Record<string, string> {
+  if (!result.values) return current;
+  return { ...current, ...result.values };
+}
 
 /* ---------- shared service controls ---------- */
 
@@ -85,22 +115,25 @@ function ExpirationPicker({
 }) {
   const presetValues = EXPIRATION_PRESETS.map((p) => isoDateAfter(p.days));
   const custom = value && !presetValues.includes(value);
+  const noExpirationSelected = !value;
   return (
     <div className="mb-3.5">
       <Lbl className="mb-1.5">Expiration</Lbl>
       <div className="grid gap-px bg-line [grid-template-columns:repeat(auto-fit,minmax(122px,1fr))]">
         {EXPIRATION_PRESETS.map((p) => {
           const date = isoDateAfter(p.days);
+          const selected = value === date;
           return (
             <button
               key={p.days}
               type="button"
               onClick={() => onChange(date)}
-              className={`bg-bg px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.1em] ${
-                value === date ? "text-acc" : "text-txt-3"
+              className={`relative bg-bg px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.1em] ${
+                selected ? "text-acc" : "text-txt-3"
               }`}
             >
-              <span className="block text-[11px] text-txt">{p.label}</span>
+              {selected && <span className="absolute left-0 top-0 h-full w-[2px] bg-acc" />}
+              <span className={`block text-[11px] ${selected ? "text-acc" : "text-txt"}`}>{p.label}</span>
               {formatDateOnly(date)}
             </button>
           );
@@ -108,11 +141,12 @@ function ExpirationPicker({
         <button
           type="button"
           onClick={() => onChange("")}
-          className={`bg-bg px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.1em] ${
-            !value ? "text-acc" : "text-txt-3"
+          className={`relative bg-bg px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.1em] ${
+            noExpirationSelected ? "text-acc" : "text-txt-3"
           }`}
         >
-          <span className="block text-[11px] text-txt">No expiration</span>
+          {noExpirationSelected && <span className="absolute left-0 top-0 h-full w-[2px] bg-acc" />}
+          <span className={`block text-[11px] ${noExpirationSelected ? "text-acc" : "text-txt"}`}>No expiration</span>
           Manual rotation
         </button>
       </div>
@@ -235,9 +269,7 @@ export function ServiceCatalog({
   const [loading, setLoading] = useState(!templates);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [githubBusy, setGithubBusy] = useState(false);
-  const [githubMessage, setGithubMessage] = useState<string | null>(null);
-  const [githubError, setGithubError] = useState<string | null>(null);
+  const [assist, setAssist] = useState<AssistState>(EMPTY_ASSIST);
 
   useEffect(() => {
     if (templates) {
@@ -264,9 +296,7 @@ export function ServiceCatalog({
   }, [templates]);
 
   useEffect(() => {
-    setGithubBusy(false);
-    setGithubMessage(null);
-    setGithubError(null);
+    setAssist(EMPTY_ASSIST);
   }, [sel?.id]);
 
   const filtered = list.filter(
@@ -282,25 +312,30 @@ export function ServiceCatalog({
 
   if (sel) {
     const t = sel;
-    const fetchGithub = async () => {
-      if (githubBusy) return;
-      setGithubBusy(true);
-      setGithubError(null);
-      setGithubMessage(null);
+    const runAssist = async (fieldLabel: string) => {
+      if (assist.busy) return;
+      setAssist({ field: fieldLabel, busy: true, message: null, note: null, error: null });
       try {
-        const profile = await fetchGitHubTokenProfile(vals["Personal Access Token"] || "");
+        const result = await runCredentialAutofill(t.id, fieldLabel, vals[fieldLabel] || "");
         setVals((current) => ({
-          ...current,
-          __label: current.__label || profile.login,
-          Username: profile.login,
-          ...(profile.email ? { "Account Email": profile.email } : {}),
+          ...applyAutofillValues(current, result),
+          ...(current.__label || !result.label ? {} : { __label: result.label }),
         }));
-        const scopeLabel = profile.scopes.length ? ` · ${profile.scopes.join(", ")}` : "";
-        setGithubMessage(`Fetched ${profile.login}${scopeLabel}`);
+        setAssist({
+          field: fieldLabel,
+          busy: false,
+          message: result.message,
+          note: result.note ?? null,
+          error: null,
+        });
       } catch (err) {
-        setGithubError((err as Error)?.message ?? "Could not fetch GitHub account.");
-      } finally {
-        setGithubBusy(false);
+        setAssist({
+          field: fieldLabel,
+          busy: false,
+          message: null,
+          note: null,
+          error: (err as Error)?.message ?? "Could not fetch token metadata.",
+        });
       }
     };
     const submit = async () => {
@@ -369,27 +404,33 @@ export function ServiceCatalog({
           />
           <EnvironmentPicker value={env} onChange={setEnv} />
           <ExpirationPicker value={expiresAt} onChange={setExpiresAt} />
-          {t.fields.map((f) => (
+          {t.fields.map((f) => {
+            const fieldAssist = credentialAssistFor(t.id, f.label);
+            return (
             <Fragment key={f.label}>
               <FormField
                 label={f.label}
                 secret={f.secret}
                 area={f.area}
+                hint={credentialFieldHint(t.id, f.label, f.fieldType, f.secret)}
                 value={vals[f.label] || ""}
                 onChange={(v) => setVals((s) => ({ ...s, [f.label]: v }))}
-                placeholder={"enter " + f.label.toLowerCase()}
+                placeholder={credentialPlaceholder(f.label, f.fieldType, f.secret, f.area)}
               />
-              {t.id === "github" && f.label === "Personal Access Token" && (
-                <GitHubAutofillPanel
-                  busy={githubBusy}
-                  message={githubMessage}
-                  error={githubError}
-                  disabled={!vals["Personal Access Token"]?.trim()}
-                  onFetch={fetchGithub}
+              {fieldAssist && (
+                <CredentialAutofillPanel
+                  assist={fieldAssist}
+                  busy={assist.busy && assist.field === f.label}
+                  message={assist.field === f.label ? assist.message : null}
+                  note={assist.field === f.label ? assist.note : null}
+                  error={assist.field === f.label ? assist.error : null}
+                  disabled={!vals[f.label]?.trim()}
+                  onFetch={() => runAssist(f.label)}
                 />
               )}
             </Fragment>
-          ))}
+            );
+          })}
           {t.totp && (
             <div className="mt-1.5">
               <FormField
@@ -497,9 +538,7 @@ export function EditService({
   const [submitting, setSubmitting] = useState(false);
   const [loadingSecrets, setLoadingSecrets] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [githubBusy, setGithubBusy] = useState(false);
-  const [githubMessage, setGithubMessage] = useState<string | null>(null);
-  const [githubError, setGithubError] = useState<string | null>(null);
+  const [assist, setAssist] = useState<AssistState>(EMPTY_ASSIST);
 
   useEffect(() => {
     let alive = true;
@@ -559,25 +598,28 @@ export function EditService({
     }
   };
 
-  const fetchGithub = async () => {
-    if (githubBusy) return;
-    setGithubBusy(true);
-    setGithubError(null);
-    setGithubMessage(null);
+  const runAssist = async (fieldLabel: string) => {
+    if (assist.busy) return;
+    setAssist({ field: fieldLabel, busy: true, message: null, note: null, error: null });
     try {
-      const profile = await fetchGitHubTokenProfile(vals["Personal Access Token"] || "");
-      setLabel((current) => (current.trim() ? current : profile.login));
-      setVals((current) => ({
-        ...current,
-        Username: profile.login,
-        ...(profile.email ? { "Account Email": profile.email } : {}),
-      }));
-      const scopeLabel = profile.scopes.length ? ` · ${profile.scopes.join(", ")}` : "";
-      setGithubMessage(`Fetched ${profile.login}${scopeLabel}`);
+      const result = await runCredentialAutofill(service.templateId, fieldLabel, vals[fieldLabel] || "");
+      setLabel((current) => (current.trim() || !result.label ? current : result.label));
+      setVals((current) => applyAutofillValues(current, result));
+      setAssist({
+        field: fieldLabel,
+        busy: false,
+        message: result.message,
+        note: result.note ?? null,
+        error: null,
+      });
     } catch (err) {
-      setGithubError((err as Error)?.message ?? "Could not fetch GitHub account.");
-    } finally {
-      setGithubBusy(false);
+      setAssist({
+        field: fieldLabel,
+        busy: false,
+        message: null,
+        note: null,
+        error: (err as Error)?.message ?? "Could not fetch token metadata.",
+      });
     }
   };
 
@@ -617,28 +659,40 @@ export function EditService({
         />
         <EnvironmentPicker value={env} onChange={setEnv} />
         <ExpirationPicker value={expiresAt} onChange={setExpiresAt} />
-        {service.fields.map((field) => (
+        {service.fields.map((field) => {
+          const fieldAssist = credentialAssistFor(service.templateId, field.label);
+          return (
           <Fragment key={field.id}>
             <FormField
               label={field.label}
               secret={field.secret}
               area={field.area}
+              hint={credentialFieldHint(service.templateId, field.label, field.fieldType, field.secret)}
               initiallyRevealed={field.secret ? revealSecretsByDefault : false}
               value={vals[field.label] || ""}
               onChange={(value) => setVals((s) => ({ ...s, [field.label]: value }))}
-              placeholder={field.secret ? (field.hasValue ? "leave unchanged" : "set value") : ""}
+              placeholder={credentialPlaceholder(
+                field.label,
+                field.fieldType,
+                field.secret,
+                field.area,
+                field.hasValue,
+              )}
             />
-            {service.templateId === "github" && field.label === "Personal Access Token" && (
-              <GitHubAutofillPanel
-                busy={githubBusy}
-                message={githubMessage}
-                error={githubError}
-                disabled={!vals["Personal Access Token"]?.trim()}
-                onFetch={fetchGithub}
+            {fieldAssist && (
+              <CredentialAutofillPanel
+                assist={fieldAssist}
+                busy={assist.busy && assist.field === field.label}
+                message={assist.field === field.label ? assist.message : null}
+                note={assist.field === field.label ? assist.note : null}
+                error={assist.field === field.label ? assist.error : null}
+                disabled={!vals[field.label]?.trim()}
+                onFetch={() => runAssist(field.label)}
               />
             )}
           </Fragment>
-        ))}
+          );
+        })}
         {service.totp && (
           <FormField
             label="Authenticator secret (TOTP)"
@@ -655,32 +709,37 @@ export function EditService({
   );
 }
 
-function GitHubAutofillPanel({
+function CredentialAutofillPanel({
+  assist,
   busy,
   message,
+  note,
   error,
   disabled,
   onFetch,
 }: {
+  assist: NonNullable<ReturnType<typeof credentialAssistFor>>;
   busy: boolean;
   message: string | null;
+  note: string | null;
   error: string | null;
   disabled: boolean;
   onFetch: () => void | Promise<void>;
 }) {
   return (
-    <div className="mb-3.5 flex flex-wrap items-center gap-2 border border-line-2 bg-bg px-3 py-2.5">
+    <div className="mb-3.5 grid gap-2 border border-line-2 bg-bg px-3 py-2.5 sm:grid-cols-[auto_1fr] sm:items-start">
       <Btn type="button" variant="ghost" onClick={() => void onFetch()} disabled={busy || disabled}>
-        <Icon name="refresh" size={13} /> {busy ? "Fetching..." : "Fetch GitHub account"}
+        <Icon name="refresh" size={13} /> {busy ? "Fetching..." : assist.buttonLabel}
       </Btn>
-      <div className="min-w-0 flex-1 font-mono text-[10px] uppercase tracking-[0.08em]">
+      <div className="min-w-0 font-mono text-[10px] uppercase tracking-[0.08em]">
         {error ? (
           <span className="text-danger">{error}</span>
         ) : message ? (
           <span className="text-acc">{message}</span>
         ) : (
-          <span className="text-txt-4">Uses pasted token once</span>
+          <span className="text-txt-4">{assist.idleText}</span>
         )}
+        {note && <div className="mt-1 leading-[1.5] text-txt-4">{note}</div>}
       </div>
     </div>
   );
@@ -919,6 +978,7 @@ function FormField({
   value,
   onChange,
   placeholder,
+  hint,
   secret,
   area,
   autoFocus,
@@ -929,6 +989,7 @@ function FormField({
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  hint?: string;
   secret?: boolean;
   area?: boolean;
   autoFocus?: boolean;
@@ -987,7 +1048,10 @@ function FormField({
 
   return (
     <div className="mb-3.5">
-      <Lbl className="mb-1.5">{label}</Lbl>
+      <Lbl className="mb-1.5 flex flex-wrap items-center gap-2">
+        <span>{label}</span>
+        {hint && <span className="text-acc">{hint}</span>}
+      </Lbl>
       <div className="flex min-h-[44px] items-center gap-2 border border-line-2 bg-bg">
         {area ? (
           <textarea

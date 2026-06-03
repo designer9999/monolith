@@ -18,6 +18,7 @@ import {
   listProjects,
   lockVault,
   reorderProjects,
+  restoreRememberedUnlock,
   scanPairingQr,
   setClipboardClearMs,
   setProjectIcon,
@@ -115,8 +116,15 @@ export default function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [status, currentPlatform] = await Promise.all([vaultStatus(), appPlatform()]);
+        let [status, currentPlatform] = await Promise.all([vaultStatus(), appPlatform()]);
         setPlatform(currentPlatform);
+        if (status.initialized && !status.unlocked) {
+          try {
+            status = await restoreRememberedUnlock();
+          } catch {
+            // A missing/expired OS credential should fall through to the normal lock screen.
+          }
+        }
         setLockedCount(status.itemCount);
         if (!status.initialized) {
           setPhase("onboarding");
