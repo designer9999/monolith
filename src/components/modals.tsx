@@ -6,7 +6,7 @@
  * it can drive `addService` / `createProject`.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 
 import { listTemplates, revealField } from "@/lib/tauri";
 import type {
@@ -21,6 +21,7 @@ import type {
 } from "@/lib/types";
 import { Icon } from "@/lib/icons";
 import { EXPIRATION_PRESETS, formatDateOnly, isoDateAfter } from "@/lib/expiration";
+import { decodeTotpQrImage, extractTotpSecret } from "@/lib/totp-qr";
 import { ServiceMark } from "@/lib/ui";
 import { Btn } from "@/components/ui/btn";
 import { Lbl } from "@/components/ui/primitives";
@@ -353,9 +354,10 @@ export function ServiceCatalog({
               <FormField
                 label="Authenticator secret (TOTP)"
                 secret
+                totpQr
                 value={vals.__totp || ""}
                 onChange={(v) => setVals((s) => ({ ...s, __totp: v }))}
-                placeholder="base32 secret · enables rotating codes"
+                placeholder="paste QR image, otpauth URI, or setup key"
               />
             </div>
           )}
@@ -565,10 +567,11 @@ export function EditService({
           <FormField
             label="Authenticator secret (TOTP)"
             secret
+            totpQr
             initiallyRevealed={revealSecretsByDefault}
             value={totpSecret}
             onChange={setTotpSecret}
-            placeholder="leave unchanged"
+            placeholder="paste QR image, otpauth URI, or leave unchanged"
           />
         )}
       </div>
@@ -813,6 +816,7 @@ function FormField({
   area,
   autoFocus,
   initiallyRevealed = false,
+  totpQr,
 }: {
   label: string;
   value: string;
@@ -822,12 +826,57 @@ function FormField({
   area?: boolean;
   autoFocus?: boolean;
   initiallyRevealed?: boolean;
+  totpQr?: boolean;
 }) {
   const [show, setShow] = useState(initiallyRevealed);
+  const [qrStatus, setQrStatus] = useState<"idle" | "reading" | "ok" | "error">("idle");
+  const [qrMessage, setQrMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (secret) setShow(initiallyRevealed);
   }, [initiallyRevealed, secret]);
+
+  const applyTotpSecret = (result: ReturnType<typeof extractTotpSecret>) => {
+    onChange(result.secret);
+    setShow(true);
+    setQrStatus("ok");
+    const source = [result.issuer, result.account].filter(Boolean).join(" · ");
+    setQrMessage(source ? `QR imported · ${source}` : "QR imported");
+  };
+
+  const handlePaste = async (
+    event: ReactClipboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ) => {
+    if (!totpQr) return;
+
+    const text = event.clipboardData.getData("text/plain").trim();
+    if (text.toLowerCase().startsWith("otpauth://")) {
+      event.preventDefault();
+      try {
+        applyTotpSecret(extractTotpSecret(text));
+      } catch (err) {
+        setQrStatus("error");
+        setQrMessage((err as Error)?.message ?? "Could not read TOTP setup code.");
+      }
+      return;
+    }
+
+    const imageItem = Array.from(event.clipboardData.items).find((item) =>
+      item.type.startsWith("image/"),
+    );
+    const image = imageItem?.getAsFile();
+    if (!image) return;
+
+    event.preventDefault();
+    setQrStatus("reading");
+    setQrMessage("Reading QR");
+    try {
+      applyTotpSecret(await decodeTotpQrImage(image));
+    } catch (err) {
+      setQrStatus("error");
+      setQrMessage((err as Error)?.message ?? "Could not read QR image.");
+    }
+  };
 
   return (
     <div className="mb-3.5">
@@ -837,6 +886,7 @@ function FormField({
           <textarea
             value={value}
             onChange={(e) => onChange(e.target.value)}
+            onPaste={handlePaste}
             placeholder={placeholder}
             rows={3}
             className="flex-1 resize-y border-none bg-transparent px-3 py-2.5 font-mono text-[12px] leading-[1.45] tracking-normal text-txt outline-none"
@@ -846,6 +896,7 @@ function FormField({
             type={secret && !show ? "password" : "text"}
             value={value}
             onChange={(e) => onChange(e.target.value)}
+            onPaste={handlePaste}
             placeholder={placeholder}
             autoFocus={autoFocus}
             className="min-w-0 flex-1 border-none bg-transparent px-3 py-2.5 font-mono text-[12px] leading-[1.45] tracking-normal text-txt outline-none"
@@ -861,6 +912,21 @@ function FormField({
           </button>
         )}
       </div>
+      {totpQr && (
+        <div
+          className={
+            "mt-1.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] " +
+            (qrStatus === "ok"
+              ? "text-acc"
+              : qrStatus === "error"
+                ? "text-danger"
+                : "text-txt-4")
+          }
+        >
+          <Icon name="qr" size={11} />
+          {qrMessage ?? "Paste QR image or otpauth URI"}
+        </div>
+      )}
     </div>
   );
 }

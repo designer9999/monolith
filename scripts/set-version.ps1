@@ -24,7 +24,7 @@ try {
   Invoke-External "npm.cmd" @("version", $Version, "--no-git-tag-version", "--allow-same-version")
 
   $cargoPath = Join-Path $Root "src-tauri\Cargo.toml"
-  $cargo = Get-Content $cargoPath -Raw
+  $cargo = Get-Content $cargoPath -Raw -Encoding UTF8
   $cargo = [regex]::Replace(
     $cargo,
     '(?m)^version\s*=\s*"[^"]+"',
@@ -34,7 +34,7 @@ try {
   Write-Utf8NoBom $cargoPath $cargo
 
   $tauriPath = Join-Path $Root "src-tauri\tauri.conf.json"
-  $tauri = Get-Content $tauriPath -Raw
+  $tauri = Get-Content $tauriPath -Raw -Encoding UTF8
   $tauri = [regex]::Replace(
     $tauri,
     '("version"\s*:\s*")[^"]+(")',

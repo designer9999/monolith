@@ -796,7 +796,7 @@ export function Settings({
         <section>
           <SectionHead icon="gear" title="About" />
           <div className="mb-[18px] grid grid-cols-1 gap-px bg-line min-[430px]:grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(160px,1fr))]">
-            <KV k="Version" v="0.1.0 · prototype" />
+            <KV k="Version" v="0.1.1 · release" />
             <KV k="Engine" v="Tauri 2 · Rust 2021" />
             <KV k="UI" v="React · TypeScript" />
             <KV k="Store" v="rusqlite · SQLite" />
