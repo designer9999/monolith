@@ -310,6 +310,19 @@ pub struct PairingImportResult {
     pub item_count: i64,
 }
 
+/// A temporary localhost API session for local AI agents. The token is shown
+/// only so the user can hand it to a local agent; endpoints never reveal stored
+/// secrets and can only import while the vault is unlocked.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBridgeSession {
+    pub base_url: String,
+    pub capabilities_url: String,
+    pub import_url: String,
+    pub token: String,
+    pub expires_at: String,
+}
+
 /// Input used by the mobile side after scanning a desktop QR payload.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

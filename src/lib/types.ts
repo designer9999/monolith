@@ -296,6 +296,14 @@ export interface AgentImportResult {
   errors: AgentImportError[];
 }
 
+export interface AgentBridgeSession {
+  baseUrl: string;
+  capabilitiesUrl: string;
+  importUrl: string;
+  token: string;
+  expiresAt: string;
+}
+
 // --- errors ---
 
 type AppErrorKind =

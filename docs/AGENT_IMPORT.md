@@ -1,6 +1,6 @@
 # MONOLITH Agent Import
 
-MONOLITH accepts a local JSON bundle that another agent or script can generate from private credential notes. The bundle is pasted, selected, or dropped into `Settings -> Agent Import` while the vault is unlocked. Secret values are encrypted immediately by the same Rust path used by manual service creation and edits.
+MONOLITH accepts a local JSON bundle that another agent or script can generate from private credential notes. The bundle can be posted directly through the temporary local Agent Bridge, or pasted, selected, or dropped into `Settings -> Agent Import` while the vault is unlocked. Secret values are encrypted immediately by the same Rust path used by manual service creation and edits.
 
 Do not print secret values in chat. Do not commit generated import bundles. Generated files named `*.monolith-import.json` or `monolith-import*.json` are git-ignored.
 
@@ -10,13 +10,41 @@ This is the intended workflow when another local AI agent is helping collect cre
 
 1. Open MONOLITH and unlock the vault.
 2. Go to `Settings -> Agent Import`.
-3. Copy the in-app agent handoff prompt.
-4. Replace the placeholder folder paths with the local credential folders that the agent may read.
-5. Ask the agent to write one `*.monolith-import.json` file that matches `docs/agent-import.schema.json`.
-6. Drop or select that file in MONOLITH. Import starts immediately.
-7. Delete the plaintext import file after import.
+3. Press `Start bridge` for direct local automation, then copy the API prompt.
+4. Tell the agent which credential folders it may read.
+5. The agent should first call `GET /agent/capabilities`, then post a bundle to `POST /agent/import`.
+6. If the bridge is not used, ask the agent to write one `*.monolith-import.json` file and drop/select/paste it in MONOLITH.
+7. Delete any plaintext import file after import.
 
 The generated bundle is a temporary bridge. It is not the vault. Secrets only become protected after MONOLITH encrypts them into the local database.
+
+## Local Agent Bridge
+
+The Agent Bridge is a temporary localhost API exposed from `Settings -> Agent Import` while the vault is unlocked.
+
+- It listens only on `127.0.0.1`.
+- It requires the temporary `X-MONOLITH-Agent-Token` shown in the copied API prompt.
+- It can return import capabilities and templates.
+- It can import bundles.
+- It cannot reveal existing vault data or secret values.
+- It expires automatically.
+
+Example flow:
+
+```powershell
+$token = "<temporary token from MONOLITH Settings>"
+$base = "http://127.0.0.1:<port>"
+
+Invoke-RestMethod "$base/agent/capabilities" -Headers @{
+  "X-MONOLITH-Agent-Token" = $token
+}
+
+Invoke-RestMethod "$base/agent/import" -Method Post -ContentType "application/json" -Headers @{
+  "X-MONOLITH-Agent-Token" = $token
+} -Body (Get-Content .\local.monolith-import.json -Raw)
+```
+
+Agents should call `GET /agent/capabilities` before writing a bundle. The response contains the exact template IDs, field labels, schema, limits, and a copyable prompt.
 
 ## Copyable Agent Prompt
 
@@ -29,7 +57,7 @@ Read only these local credential folders or files:
 - <paste credential folder path 1>
 - <paste credential folder path 2>
 
-Do not print, summarize, or expose secret values in chat. Produce one JSON file that matches docs/agent-import.schema.json. Use version 1.
+Do not print, summarize, or expose secret values in chat. If MONOLITH Agent Bridge is active, first call GET /agent/capabilities and then POST the bundle to /agent/import. If the bridge is not active, produce one JSON file that matches docs/agent-import.schema.json. Use version 1.
 
 Put global and personal accounts under defaultProjectName "Personal". Put project-specific credentials under projectName only when the file clearly names a project.
 

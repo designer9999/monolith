@@ -3,10 +3,13 @@
 //! `Result<T, AppError>`. The unlocked vault key only crosses this boundary
 //! inside the app-layer encrypted local pairing package.
 
+use std::sync::Arc;
+
 use secrecy::SecretString;
 use tauri::State;
 use time::format_description::well_known::Rfc3339;
 
+use crate::agent_bridge;
 use crate::agent_import;
 use crate::db::repo;
 use crate::error::{AppError, AppResult};
@@ -340,6 +343,22 @@ pub fn import_agent_bundle_file(
     let bundle: AgentImportBundle = serde_json::from_str(&text)
         .map_err(|err| AppError::Invalid(format!("import bundle is not valid JSON: {err}")))?;
     state.with_unlocked(|conn, key| agent_import::import_bundle(conn, key, &bundle))
+}
+
+#[tauri::command]
+pub fn start_agent_bridge(state: State<'_, AppState>) -> AppResult<AgentBridgeSession> {
+    state.with_unlocked(|_, _| Ok(()))?;
+    agent_bridge::start(Arc::clone(&state.agent_bridge), Arc::clone(&state.inner))
+}
+
+#[tauri::command]
+pub fn stop_agent_bridge(state: State<'_, AppState>) -> AppResult<()> {
+    agent_bridge::stop(&state.agent_bridge)
+}
+
+#[tauri::command]
+pub fn agent_bridge_status(state: State<'_, AppState>) -> AppResult<Option<AgentBridgeSession>> {
+    agent_bridge::status(&state.agent_bridge)
 }
 
 /// Edit a service and archive replaced secret values.

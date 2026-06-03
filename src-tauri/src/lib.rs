@@ -7,6 +7,7 @@
 //! The Rust core owns all encryption, storage, and TOTP generation; the frontend
 //! only ever sees masked metadata, single revealed values on request, and codes.
 
+mod agent_bridge;
 pub mod agent_import;
 mod commands;
 pub mod db;
@@ -67,6 +68,9 @@ pub fn run() {
             commands::add_service,
             commands::import_agent_bundle,
             commands::import_agent_bundle_file,
+            commands::start_agent_bridge,
+            commands::stop_agent_bridge,
+            commands::agent_bridge_status,
             commands::update_service,
             commands::delete_service,
             commands::reveal_field,

@@ -10,6 +10,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "r
 import { QRCodeSVG } from "qrcode.react";
 
 import type {
+  AgentBridgeSession,
   AgentImportBundle,
   AgentImportResult,
   AppError,
@@ -24,6 +25,7 @@ import type {
 } from "@/lib/types";
 import {
   approvePairingSession,
+  agentBridgeStatus,
   cancelPairingSession,
   checkInstallAndRelaunch,
   copyText,
@@ -32,7 +34,9 @@ import {
   listDevices,
   pairingSessionStatus,
   revokeDevice,
+  startAgentBridge,
   startPairingSession,
+  stopAgentBridge,
   type AppUpdateProgress,
 } from "@/lib/tauri";
 import { Icon } from "@/lib/icons";
@@ -165,6 +169,25 @@ function updateProgressText(progress: AppUpdateProgress | null): string {
 
 const MAX_IMPORT_FILE_BYTES = 8 * 1024 * 1024;
 
+const AGENT_TEMPLATE_GUIDE = `Supported templateId values and useful field labels:
+- github: Username, Account Email, Personal Access Token, SSH Private Key, Webhook Secret, OAuth Client ID, OAuth Secret
+- apple: Account Email, Password, Recovery Email, Trusted Phone, Recovery Key, Backup Codes
+- mega: Account Email, Password, Recovery Key, Notes
+- topaz: Account Email, Password, License Key, Notes
+- huggingface: Username, Account Email, Access Token, Organization
+- instagram: Username, Account Email, Password, Recovery Email, Phone, Backup Codes
+- login: URL, Email / Username, Password
+- zeroid: Client ID, Client Secret, Issuer URL, Account Email
+- openai: API Key, Organization ID, Project ID
+- vercel: Account Email, Access Token, Team ID, Project ID, Deploy Hook URL
+- supabase: Project URL, Anon Key, Service Role Key, JWT Secret, Database Password, S3 Access Key, S3 Secret Key
+- postgres: Host, Port, User, Password, Database, Connection URL
+- ssh: Host, User, Private Key, Passphrase
+- domain: Registrar, Login Email, Password, EPP / Auth Code, Renewal Date
+- card: Card Number, Expiry, CVV, Cardholder
+- note: Note
+- also available: google, stripe, cloudflare, aws, shopify, smtp, prisma, claude, resend, runpod`;
+
 const AGENT_IMPORT_PROMPT = `You are preparing a MONOLITH agent import bundle.
 
 Read only these local credential folders or files:
@@ -177,11 +200,44 @@ Put global and personal accounts under defaultProjectName "Personal". Put projec
 
 Use stable labels, because MONOLITH upserts by project + templateId + label. Re-running the same import should update existing services, not create duplicates.
 
-Use templateId values such as github, apple, mega, topaz, huggingface, instagram, login, zeroid, openai, vercel, supabase, postgres, ssh, card, domain, and note. Use note for anything that does not fit a template yet.
+${AGENT_TEMPLATE_GUIDE}
+
+Use note for anything that does not fit a template yet.
 
 Use expiresAt only when a real expiration, renewal, or planned rotation date is present, formatted YYYY-MM-DD. Do not invent dates.
 
 Save the result as monolith-import.monolith-import.json. Do not commit the file. After import, delete the plaintext bundle.`;
+
+function buildAgentPrompt(bridge: AgentBridgeSession | null): string {
+  if (!bridge) return AGENT_IMPORT_PROMPT;
+  return `You are importing credentials into MONOLITH through its local agent bridge.
+
+Read only the credential folders or files the user explicitly names. Do not print, summarize, or expose secret values in chat.
+
+First fetch the live MONOLITH capabilities. They include the exact templates, field labels, JSON schema, size limits, and an example bundle:
+GET ${bridge.capabilitiesUrl}
+Header: X-MONOLITH-Agent-Token: ${bridge.token}
+
+Then POST a JSON bundle directly into MONOLITH:
+POST ${bridge.importUrl}
+Header: X-MONOLITH-Agent-Token: ${bridge.token}
+Content-Type: application/json
+
+Bundle root shape:
+{"version":1,"source":"local credential folders","defaultProjectName":"Personal","items":[...]}
+
+Rules:
+- Put global and personal accounts under defaultProjectName "Personal".
+- Put project-specific credentials under projectName only when a file clearly names a project.
+- Use stable labels because MONOLITH upserts by project + templateId + label.
+- Use expiresAt only for real expiration, renewal, or rotation dates in YYYY-MM-DD format.
+- Use note for anything that does not fit a template yet.
+- Never invent missing secret values.
+
+${AGENT_TEMPLATE_GUIDE}
+
+This bridge is loopback-only, write-only, and expires at ${bridge.expiresAt}.`;
+}
 
 export function Settings({
   items,
@@ -226,11 +282,15 @@ export function Settings({
   const [importResult, setImportResult] = useState<AgentImportResult | null>(null);
   const [importDropActive, setImportDropActive] = useState(false);
   const [importPromptCopied, setImportPromptCopied] = useState(false);
+  const [bridge, setBridge] = useState<AgentBridgeSession | null>(null);
+  const [bridgeBusy, setBridgeBusy] = useState(false);
+  const [bridgeError, setBridgeError] = useState<string | null>(null);
   const autoApprovingRef = useRef(false);
   const importFileRef = useRef<HTMLInputElement>(null);
   const isMobile = platform === "android" || platform === "ios";
   const autolock = autoLockLabel(settings.autoLockMs);
   const clip = clipboardLabel(settings.clipboardClearMs);
+  const agentPrompt = buildAgentPrompt(bridge);
 
   const counts: Record<string, number> = {};
   items.forEach((i) => {
@@ -250,6 +310,7 @@ export function Settings({
     ["shell · execute", false],
     ["fs · arbitrary read / write", false],
     ["github api · token autofill", true],
+    ["agent bridge · loopback import only", true],
     ["updater · signed GitHub releases", !isMobile],
     ["barcode scanner · mobile only", true],
   ];
@@ -269,9 +330,53 @@ export function Settings({
     }
   };
 
+  const refreshBridge = async () => {
+    try {
+      setBridge(await agentBridgeStatus());
+    } catch {
+      setBridge(null);
+    }
+  };
+
   useEffect(() => {
     void refreshDevices();
+    void refreshBridge();
   }, []);
+
+  useEffect(() => {
+    if (!bridge) return;
+    const timer = window.setInterval(() => {
+      void refreshBridge();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [bridge]);
+
+  const startBridge = async () => {
+    if (bridgeBusy) return;
+    setBridgeBusy(true);
+    setBridgeError(null);
+    try {
+      setBridge(await startAgentBridge());
+    } catch (err) {
+      setBridgeError((err as AppError)?.message ?? "Could not start the local agent bridge.");
+    } finally {
+      setBridgeBusy(false);
+    }
+  };
+
+  const stopBridge = async () => {
+    if (bridgeBusy) return;
+    setBridgeBusy(true);
+    setBridgeError(null);
+    try {
+      await stopAgentBridge();
+      setBridge(null);
+    } catch (err) {
+      setBridgeError((err as AppError)?.message ?? "Could not stop the local agent bridge.");
+    } finally {
+      setBridgeBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!pairing || pairing.approved) return;
@@ -509,7 +614,7 @@ export function Settings({
 
   const copyAgentPrompt = async () => {
     try {
-      await copyText(AGENT_IMPORT_PROMPT);
+      await copyText(agentPrompt);
       setImportPromptCopied(true);
       window.setTimeout(() => setImportPromptCopied(false), 1400);
     } catch (err) {
@@ -840,19 +945,49 @@ export function Settings({
             desc="Ask an agent to generate a MONOLITH JSON bundle, then paste, select, or drop it here while the vault is unlocked. Values are encrypted immediately; this screen only shows counts and redacted errors."
           >
             <div className="flex flex-col gap-2">
+              <div className="border border-line-2 bg-bg-1 px-3 py-3 sm:w-[680px]">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <LblText className="text-acc">LOCAL AGENT BRIDGE</LblText>
+                    <div className="mt-1 text-[11px] leading-[1.5] text-txt-4">
+                      Temporary loopback API. Agents can read capabilities and import bundles; they cannot read vault secrets.
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Chip tone={bridge ? "accent" : "default"}>{bridge ? "ACTIVE" : "OFF"}</Chip>
+                    {bridge ? (
+                      <Btn variant="ghost" onClick={() => void stopBridge()} disabled={bridgeBusy}>
+                        <Icon name="x" size={13} /> Stop
+                      </Btn>
+                    ) : (
+                      <Btn onClick={() => void startBridge()} disabled={bridgeBusy}>
+                        <Icon name="terminal" size={13} /> {bridgeBusy ? "Starting..." : "Start bridge"}
+                      </Btn>
+                    )}
+                  </div>
+                </div>
+                <div className="grid gap-px bg-line sm:grid-cols-2">
+                  <KV k="Capabilities" v={bridge ? bridge.capabilitiesUrl : "start bridge first"} />
+                  <KV k="Import endpoint" v={bridge ? bridge.importUrl : "start bridge first"} />
+                </div>
+                <div className="mt-2 text-[10.5px] leading-[1.5] text-txt-4">
+                  Header: <span className="text-txt-2">X-MONOLITH-Agent-Token</span>. The copied prompt includes the temporary token.
+                </div>
+                {bridgeError && <div className="mt-2 text-[11px] text-danger">{bridgeError}</div>}
+              </div>
               <div className="border border-line-2 bg-bg-1">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
                   <LblText className="text-acc">AI AGENT HANDOFF</LblText>
                   <Btn variant="ghost" onClick={() => void copyAgentPrompt()}>
                     <Icon name={importPromptCopied ? "check" : "copy"} size={13} />
-                    {importPromptCopied ? "Copied" : "Copy prompt"}
+                    {importPromptCopied ? "Copied" : bridge ? "Copy API prompt" : "Copy prompt"}
                   </Btn>
                 </div>
                 <textarea
                   readOnly
-                  value={AGENT_IMPORT_PROMPT}
+                  value={agentPrompt}
                   spellCheck={false}
-                  className="h-[130px] w-full resize-none border-0 bg-bg px-3 py-2 font-mono text-[10.5px] leading-[1.55] text-txt-3 outline-none sm:w-[560px]"
+                  className="h-[250px] w-full resize-none border-0 bg-bg px-3 py-2 font-mono text-[10.5px] leading-[1.55] text-txt-3 outline-none sm:w-[680px]"
                 />
               </div>
               <input
@@ -874,7 +1009,7 @@ export function Settings({
                 onDragLeave={() => setImportDropActive(false)}
                 onDrop={(event) => void onImportDrop(event)}
                 className={cn(
-                  "flex flex-col gap-2 border border-dashed px-3 py-3 transition-colors sm:w-[560px]",
+                  "flex flex-col gap-2 border border-dashed px-3 py-3 transition-colors sm:w-[680px]",
                   importDropActive ? "border-acc bg-acc/10" : "border-line-2 bg-bg-1",
                 )}
               >
@@ -895,7 +1030,7 @@ export function Settings({
                 onChange={(event) => setImportText(event.currentTarget.value)}
                 spellCheck={false}
                 placeholder='{"version":1,"defaultProjectName":"Personal","items":[...]}'
-                className="h-[140px] w-full min-w-0 resize-y border border-line-2 bg-bg-2 px-3 py-2 font-mono text-[11px] leading-[1.5] text-txt outline-none placeholder:text-txt-4 focus:border-acc sm:w-[560px]"
+                className="h-[150px] w-full min-w-0 resize-y border border-line-2 bg-bg-2 px-3 py-2 font-mono text-[11px] leading-[1.5] text-txt outline-none placeholder:text-txt-4 focus:border-acc sm:w-[680px]"
               />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">

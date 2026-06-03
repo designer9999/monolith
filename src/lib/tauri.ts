@@ -16,6 +16,7 @@ import { check, type DownloadEvent } from "@tauri-apps/plugin-updater";
 import type {
   Activity,
   AddServiceInput,
+  AgentBridgeSession,
   AgentImportBundle,
   AgentImportResult,
   AppSettings,
@@ -87,6 +88,9 @@ export const importAgentBundle = (bundle: AgentImportBundle) =>
   cmd<AgentImportResult>("import_agent_bundle", { bundle });
 export const importAgentBundleFile = (path: string) =>
   cmd<AgentImportResult>("import_agent_bundle_file", { path });
+export const startAgentBridge = () => cmd<AgentBridgeSession>("start_agent_bridge");
+export const stopAgentBridge = () => cmd<void>("stop_agent_bridge");
+export const agentBridgeStatus = () => cmd<AgentBridgeSession | null>("agent_bridge_status");
 export const updateService = (input: UpdateServiceInput) =>
   cmd<Service>("update_service", { input });
 export const deleteService = (serviceId: string) => cmd<void>("delete_service", { serviceId });

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 
+use crate::agent_bridge::AgentBridgeStore;
 use crate::error::{AppError, AppResult};
 use crate::pairing::PairingStore;
 use crate::vault::VaultKey;
@@ -21,9 +22,10 @@ pub struct Inner {
 
 /// The Tauri-managed state. All access goes through the mutex.
 pub struct AppState {
-    pub inner: Mutex<Inner>,
+    pub inner: Arc<Mutex<Inner>>,
     pub db_path: PathBuf,
     pub pairing: Arc<PairingStore>,
+    pub agent_bridge: Arc<AgentBridgeStore>,
 }
 
 impl AppState {
@@ -34,7 +36,8 @@ impl AppState {
         Ok(AppState {
             db_path: db_path.to_path_buf(),
             pairing: Arc::new(PairingStore::default()),
-            inner: Mutex::new(Inner { conn, key: None }),
+            agent_bridge: Arc::new(AgentBridgeStore::default()),
+            inner: Arc::new(Mutex::new(Inner { conn, key: None })),
         })
     }
 
