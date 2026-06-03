@@ -7,18 +7,19 @@
 //! The Rust core owns all encryption, storage, and TOTP generation; the frontend
 //! only ever sees masked metadata, single revealed values on request, and codes.
 
+pub mod agent_import;
 mod commands;
-mod db;
-mod error;
-mod models;
+pub mod db;
+pub mod error;
+pub mod models;
 mod pairing;
-mod remembered_unlock;
+pub mod remembered_unlock;
 mod seed;
 mod state;
 mod strength;
-mod templates;
+pub mod templates;
 mod totp;
-mod vault;
+pub mod vault;
 
 use tauri::Manager;
 
@@ -65,6 +66,7 @@ pub fn run() {
             commands::reorder_projects,
             commands::add_service,
             commands::import_agent_bundle,
+            commands::import_agent_bundle_file,
             commands::update_service,
             commands::delete_service,
             commands::reveal_field,

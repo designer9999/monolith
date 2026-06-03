@@ -6,7 +6,7 @@
  * Unimplemented settings are visibly disabled.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
 import type {
@@ -26,7 +26,9 @@ import {
   approvePairingSession,
   cancelPairingSession,
   checkInstallAndRelaunch,
+  copyText,
   importAgentBundle,
+  importAgentBundleFile,
   listDevices,
   pairingSessionStatus,
   revokeDevice,
@@ -161,6 +163,26 @@ function updateProgressText(progress: AppUpdateProgress | null): string {
   return `${Math.min(100, Math.round((progress.downloaded / total) * 100))}%`;
 }
 
+const MAX_IMPORT_FILE_BYTES = 8 * 1024 * 1024;
+
+const AGENT_IMPORT_PROMPT = `You are preparing a MONOLITH agent import bundle.
+
+Read only these local credential folders or files:
+- <paste credential folder path 1>
+- <paste credential folder path 2>
+
+Do not print, summarize, or expose secret values in chat. Produce one JSON file that matches docs/agent-import.schema.json. Use version 1.
+
+Put global and personal accounts under defaultProjectName "Personal". Put project-specific credentials under projectName only when the file clearly names a project.
+
+Use stable labels, because MONOLITH upserts by project + templateId + label. Re-running the same import should update existing services, not create duplicates.
+
+Use templateId values such as github, apple, mega, topaz, huggingface, instagram, login, zeroid, openai, vercel, supabase, postgres, ssh, card, domain, and note. Use note for anything that does not fit a template yet.
+
+Use expiresAt only when a real expiration, renewal, or planned rotation date is present, formatted YYYY-MM-DD. Do not invent dates.
+
+Save the result as monolith-import.monolith-import.json. Do not commit the file. After import, delete the plaintext bundle.`;
+
 export function Settings({
   items,
   projects,
@@ -202,7 +224,10 @@ export function Settings({
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<AgentImportResult | null>(null);
+  const [importDropActive, setImportDropActive] = useState(false);
+  const [importPromptCopied, setImportPromptCopied] = useState(false);
   const autoApprovingRef = useRef(false);
+  const importFileRef = useRef<HTMLInputElement>(null);
   const isMobile = platform === "android" || platform === "ios";
   const autolock = autoLockLabel(settings.autoLockMs);
   const clip = clipboardLabel(settings.clipboardClearMs);
@@ -389,25 +414,106 @@ export function Settings({
     }
   };
 
-  const runAgentImport = async () => {
-    if (importBusy || !importText.trim()) return;
+  const finishAgentImport = async (result: AgentImportResult) => {
+    setImportResult(result);
+    if (result.created + result.updated > 0) {
+      await onDataImported();
+    }
+  };
+
+  const runAgentImportText = async (text: string) => {
+    if (importBusy) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
     setImportBusy(true);
     setImportError(null);
     setImportResult(null);
     try {
-      const parsed = JSON.parse(importText.trim()) as AgentImportBundle;
+      const parsed = JSON.parse(trimmed) as AgentImportBundle;
       if (!parsed || !Array.isArray(parsed.items)) {
         throw new Error("Import JSON must include an items array.");
       }
       const result = await importAgentBundle(parsed);
-      setImportResult(result);
-      if (result.created + result.updated > 0) {
-        await onDataImported();
-      }
+      await finishAgentImport(result);
     } catch (err) {
       setImportError((err as AppError)?.message ?? (err as Error)?.message ?? "Import failed.");
     } finally {
       setImportBusy(false);
+    }
+  };
+
+  const runAgentImportFilePath = async (path: string) => {
+    if (importBusy) return;
+    setImportBusy(true);
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const result = await importAgentBundleFile(path);
+      await finishAgentImport(result);
+    } catch (err) {
+      setImportError((err as AppError)?.message ?? (err as Error)?.message ?? "Import failed.");
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const runAgentImport = async () => {
+    await runAgentImportText(importText);
+  };
+
+  const importFile = async (file: File) => {
+    setImportError(null);
+    setImportResult(null);
+    if (file.size > MAX_IMPORT_FILE_BYTES) {
+      setImportError("Import bundle is too large for local import.");
+      return;
+    }
+    try {
+      const text = await file.text();
+      setImportText(text);
+      await runAgentImportText(text);
+    } catch (err) {
+      const path = (file as File & { path?: string }).path;
+      if (path) {
+        await runAgentImportFilePath(path);
+        return;
+      }
+      setImportError((err as AppError)?.message ?? (err as Error)?.message ?? "Could not read dropped file.");
+    }
+  };
+
+  const onImportDrop = async (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setImportDropActive(false);
+    const file = event.dataTransfer.files.item(0);
+    if (file) {
+      await importFile(file);
+      return;
+    }
+    const text = event.dataTransfer.getData("text/plain").trim();
+    if (text) {
+      setImportText(text);
+      await runAgentImportText(text);
+      return;
+    }
+    setImportError("Drop a MONOLITH JSON bundle file or JSON text.");
+  };
+
+  const onImportFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.item(0);
+    event.currentTarget.value = "";
+    if (file) {
+      await importFile(file);
+    }
+  };
+
+  const copyAgentPrompt = async () => {
+    try {
+      await copyText(AGENT_IMPORT_PROMPT);
+      setImportPromptCopied(true);
+      window.setTimeout(() => setImportPromptCopied(false), 1400);
+    } catch (err) {
+      setImportError((err as AppError)?.message ?? (err as Error)?.message ?? "Could not copy prompt.");
     }
   };
 
@@ -731,15 +837,65 @@ export function Settings({
           <SectionHead icon="terminal" title="Agent Import" right="LOCAL JSON" />
           <SettingRow
             label="Import agent bundle"
-            desc="Paste a MONOLITH agent-import JSON bundle while the vault is unlocked. Values are encrypted immediately; this screen only shows counts and redacted errors."
+            desc="Ask an agent to generate a MONOLITH JSON bundle, then paste, select, or drop it here while the vault is unlocked. Values are encrypted immediately; this screen only shows counts and redacted errors."
           >
             <div className="flex flex-col gap-2">
+              <div className="border border-line-2 bg-bg-1">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
+                  <LblText className="text-acc">AI AGENT HANDOFF</LblText>
+                  <Btn variant="ghost" onClick={() => void copyAgentPrompt()}>
+                    <Icon name={importPromptCopied ? "check" : "copy"} size={13} />
+                    {importPromptCopied ? "Copied" : "Copy prompt"}
+                  </Btn>
+                </div>
+                <textarea
+                  readOnly
+                  value={AGENT_IMPORT_PROMPT}
+                  spellCheck={false}
+                  className="h-[130px] w-full resize-none border-0 bg-bg px-3 py-2 font-mono text-[10.5px] leading-[1.55] text-txt-3 outline-none sm:w-[560px]"
+                />
+              </div>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".json,.monolith-import,.monolith-import.json,application/json"
+                onChange={(event) => void onImportFileChange(event)}
+                className="hidden"
+              />
+              <div
+                onDragEnter={(event) => {
+                  event.preventDefault();
+                  setImportDropActive(true);
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setImportDropActive(true);
+                }}
+                onDragLeave={() => setImportDropActive(false)}
+                onDrop={(event) => void onImportDrop(event)}
+                className={cn(
+                  "flex flex-col gap-2 border border-dashed px-3 py-3 transition-colors sm:w-[560px]",
+                  importDropActive ? "border-acc bg-acc/10" : "border-line-2 bg-bg-1",
+                )}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <LblText className="text-txt-2">DROP OR SELECT BUNDLE</LblText>
+                    <div className="mt-1 text-[11px] leading-[1.5] text-txt-4">
+                      Imports immediately through the same Rust path as manual edits.
+                    </div>
+                  </div>
+                  <Btn variant="ghost" onClick={() => importFileRef.current?.click()} disabled={importBusy}>
+                    <Icon name="upload" size={13} /> Select file
+                  </Btn>
+                </div>
+              </div>
               <textarea
                 value={importText}
                 onChange={(event) => setImportText(event.currentTarget.value)}
                 spellCheck={false}
                 placeholder='{"version":1,"defaultProjectName":"Personal","items":[...]}'
-                className="h-[140px] w-full min-w-0 resize-y border border-line-2 bg-bg-2 px-3 py-2 font-mono text-[11px] leading-[1.5] text-txt outline-none placeholder:text-txt-4 focus:border-acc sm:w-[520px]"
+                className="h-[140px] w-full min-w-0 resize-y border border-line-2 bg-bg-2 px-3 py-2 font-mono text-[11px] leading-[1.5] text-txt outline-none placeholder:text-txt-4 focus:border-acc sm:w-[560px]"
               />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
@@ -796,7 +952,7 @@ export function Settings({
         <section>
           <SectionHead icon="gear" title="About" />
           <div className="mb-[18px] grid grid-cols-1 gap-px bg-line min-[430px]:grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(160px,1fr))]">
-            <KV k="Version" v="0.1.2 · release" />
+            <KV k="Version" v={`${__APP_VERSION__} · release`} />
             <KV k="Engine" v="Tauri 2 · Rust 2021" />
             <KV k="UI" v="React · TypeScript" />
             <KV k="Store" v="rusqlite · SQLite" />

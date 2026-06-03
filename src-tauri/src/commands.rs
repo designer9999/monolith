@@ -7,6 +7,7 @@ use secrecy::SecretString;
 use tauri::State;
 use time::format_description::well_known::Rfc3339;
 
+use crate::agent_import;
 use crate::db::repo;
 use crate::error::{AppError, AppResult};
 use crate::models::*;
@@ -15,6 +16,8 @@ use crate::remembered_unlock;
 use crate::state::AppState;
 use crate::templates::{self, Template};
 use crate::vault::{self, crypto, VaultKey};
+
+const MAX_AGENT_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Whether a vault exists and whether it's currently unlocked.
 #[tauri::command]
@@ -292,153 +295,6 @@ pub fn add_service(input: AddServiceInput, state: State<'_, AppState>) -> AppRes
     state.with_unlocked(|conn, key| repo::add_service(conn, key, &input))
 }
 
-const MAX_AGENT_IMPORT_ITEMS: usize = 500;
-
-enum AgentImportAction {
-    Created,
-    Updated,
-    Skipped,
-}
-
-fn non_empty(value: Option<&String>) -> Option<&str> {
-    value.map(|v| v.trim()).filter(|v| !v.is_empty())
-}
-
-fn truncate_chars(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
-}
-
-fn derive_import_label(item: &AgentImportItem, template: &Template) -> String {
-    let explicit = item.label.trim();
-    if !explicit.is_empty() {
-        return truncate_chars(explicit, 80);
-    }
-
-    const PREFERRED: &[&str] = &[
-        "Account Email",
-        "Email / Username",
-        "Username",
-        "Project ID",
-        "Store URL",
-        "URL",
-        "Host",
-        "Account ID",
-        "Client ID",
-    ];
-    for label in PREFERRED {
-        let Some(tf) = template
-            .fields
-            .iter()
-            .find(|f| f.label == *label && !f.secret)
-        else {
-            continue;
-        };
-        if let Some(value) = item
-            .fields
-            .iter()
-            .find(|field| field.label == tf.label)
-            .map(|field| field.value.trim())
-            .filter(|value| !value.is_empty())
-        {
-            return truncate_chars(value, 80);
-        }
-    }
-
-    String::new()
-}
-
-fn import_project_id(
-    conn: &rusqlite::Connection,
-    bundle: &AgentImportBundle,
-    item: &AgentImportItem,
-) -> AppResult<String> {
-    if let Some(project_id) = non_empty(item.project_id.as_ref())
-        .or_else(|| non_empty(bundle.default_project_id.as_ref()))
-    {
-        if project_id == repo::PERSONAL_PROJECT_ID {
-            repo::ensure_personal_project(conn)?;
-            return Ok(repo::PERSONAL_PROJECT_ID.to_string());
-        }
-        if repo::project_exists(conn, project_id)? {
-            return Ok(project_id.to_string());
-        }
-        return Err(AppError::NotFound(format!("project {project_id}")));
-    }
-
-    if let Some(project_name) = non_empty(item.project_name.as_ref())
-        .or_else(|| non_empty(bundle.default_project_name.as_ref()))
-    {
-        return repo::ensure_project_by_name(conn, project_name);
-    }
-
-    repo::ensure_personal_project(conn)?;
-    Ok(repo::PERSONAL_PROJECT_ID.to_string())
-}
-
-fn import_agent_item(
-    conn: &rusqlite::Connection,
-    key: &VaultKey,
-    bundle: &AgentImportBundle,
-    item: &AgentImportItem,
-) -> AppResult<AgentImportAction> {
-    let template_id = item.template_id.trim();
-    if template_id.is_empty() {
-        return Err(AppError::Invalid("templateId is required".into()));
-    }
-    let template = templates::find(template_id)
-        .ok_or_else(|| AppError::NotFound(format!("template {template_id}")))?;
-    if non_empty(item.source.as_ref()).is_some_and(|source| source.chars().count() > 512) {
-        return Err(AppError::Invalid("source is too long".into()));
-    }
-    let project_id = import_project_id(conn, bundle, item)?;
-    let label = derive_import_label(item, &template);
-    let has_payload = item
-        .fields
-        .iter()
-        .any(|field| !field.value.trim().is_empty())
-        || item
-            .totp_secret
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|secret| !secret.is_empty());
-    if !has_payload && label.is_empty() {
-        return Ok(AgentImportAction::Skipped);
-    }
-
-    if let Some(service_id) =
-        repo::find_service_id_by_identity(conn, &project_id, template.id, &label)?
-    {
-        repo::update_service(
-            conn,
-            key,
-            &UpdateServiceInput {
-                service_id,
-                label,
-                env: item.env,
-                expires_at: item.expires_at.clone(),
-                fields: item.fields.clone(),
-                totp_secret: item.totp_secret.clone(),
-            },
-        )?;
-        Ok(AgentImportAction::Updated)
-    } else {
-        repo::add_service(
-            conn,
-            key,
-            &AddServiceInput {
-                project_id,
-                template_id: template.id.to_string(),
-                label,
-                env: item.env,
-                expires_at: item.expires_at.clone(),
-                fields: item.fields.clone(),
-                totp_secret: item.totp_secret.clone(),
-            },
-        )?;
-        Ok(AgentImportAction::Created)
-    }
-}
-
 /// Import a local agent-generated JSON bundle. Secrets stay inside this command
 /// path and are encrypted by the same repo functions as manual service edits.
 #[tauri::command]
@@ -446,60 +302,44 @@ pub fn import_agent_bundle(
     bundle: AgentImportBundle,
     state: State<'_, AppState>,
 ) -> AppResult<AgentImportResult> {
-    if bundle.version.unwrap_or(1) != 1 {
-        return Err(AppError::Invalid(
-            "Agent import bundle version must be 1".into(),
-        ));
-    }
-    if bundle.items.is_empty() {
-        return Err(AppError::Invalid("Agent import bundle has no items".into()));
-    }
-    if bundle.items.len() > MAX_AGENT_IMPORT_ITEMS {
-        return Err(AppError::Invalid(format!(
-            "Agent import bundle is limited to {MAX_AGENT_IMPORT_ITEMS} items"
+    state.with_unlocked(|conn, key| agent_import::import_bundle(conn, key, &bundle))
+}
+
+/// Import a local agent bundle from an explicit dropped/selected JSON path.
+#[tauri::command]
+pub fn import_agent_bundle_file(
+    path: String,
+    state: State<'_, AppState>,
+) -> AppResult<AgentImportResult> {
+    let path = std::path::PathBuf::from(path.trim());
+    if !path.exists() {
+        return Err(AppError::NotFound(format!(
+            "import bundle {}",
+            path.display()
         )));
     }
-
-    state.with_unlocked(|conn, key| {
-        let mut result = AgentImportResult {
-            created: 0,
-            updated: 0,
-            skipped: 0,
-            errors: Vec::new(),
-        };
-        for (index, item) in bundle.items.iter().enumerate() {
-            let template_label = templates::find(item.template_id.trim())
-                .map(|t| t.name.to_string())
-                .unwrap_or_else(|| "Item".to_string());
-            let safe_label = if item.label.trim().is_empty() {
-                template_label
-            } else {
-                truncate_chars(item.label.trim(), 80)
-            };
-            match import_agent_item(conn, key, &bundle, item) {
-                Ok(AgentImportAction::Created) => result.created += 1,
-                Ok(AgentImportAction::Updated) => result.updated += 1,
-                Ok(AgentImportAction::Skipped) => result.skipped += 1,
-                Err(err) => result.errors.push(AgentImportError {
-                    index,
-                    label: safe_label,
-                    message: err.to_string(),
-                }),
-            }
-        }
-        let imported = result.created + result.updated;
-        if imported > 0 {
-            let source = non_empty(bundle.source.as_ref()).unwrap_or("agent bundle");
-            repo::log_activity(
-                conn,
-                "IMPORT",
-                &format!("{source} · {imported} credentials"),
-                "add",
-            )
-            .ok();
-        }
-        Ok(result)
-    })
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !(name.ends_with(".json") || name.ends_with(".monolith-import")) {
+        return Err(AppError::Invalid(
+            "Import bundle must be a JSON file".into(),
+        ));
+    }
+    let metadata = std::fs::metadata(&path)
+        .map_err(|err| AppError::Other(format!("could not inspect import bundle: {err}")))?;
+    if metadata.len() > MAX_AGENT_IMPORT_FILE_BYTES {
+        return Err(AppError::Invalid(
+            "Import bundle is too large for local import".into(),
+        ));
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|err| AppError::Other(format!("could not read import bundle: {err}")))?;
+    let bundle: AgentImportBundle = serde_json::from_str(&text)
+        .map_err(|err| AppError::Invalid(format!("import bundle is not valid JSON: {err}")))?;
+    state.with_unlocked(|conn, key| agent_import::import_bundle(conn, key, &bundle))
 }
 
 /// Edit a service and archive replaced secret values.

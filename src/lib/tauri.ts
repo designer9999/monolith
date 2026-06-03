@@ -85,6 +85,8 @@ export const reorderProjects = (orderedIds: string[]) =>
 export const addService = (input: AddServiceInput) => cmd<string>("add_service", { input });
 export const importAgentBundle = (bundle: AgentImportBundle) =>
   cmd<AgentImportResult>("import_agent_bundle", { bundle });
+export const importAgentBundleFile = (path: string) =>
+  cmd<AgentImportResult>("import_agent_bundle_file", { path });
 export const updateService = (input: UpdateServiceInput) =>
   cmd<Service>("update_service", { input });
 export const deleteService = (serviceId: string) => cmd<void>("delete_service", { serviceId });
@@ -202,6 +204,19 @@ let clipboardClearMs = 30_000;
 export function setClipboardClearMs(ms: number): void {
   if (![10_000, 30_000, 60_000].includes(ms)) return;
   clipboardClearMs = ms;
+}
+
+/** Copy non-secret utility text, such as the agent handoff prompt. */
+export async function copyText(text: string): Promise<void> {
+  if (isTauri) {
+    await writeText(text);
+    return;
+  }
+  try {
+    await navigator.clipboard?.writeText(text);
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
