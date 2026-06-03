@@ -1,0 +1,184 @@
+/* ============================================================
+   MONOLITH — brutalist-tech credential vault.
+   Tailwind v4 config-in-CSS: design tokens + theme mapping only.
+   ALL component styling lives in the components as Tailwind utilities.
+   ============================================================ */
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* Local fonts (offline-first — no Google Fonts network calls). */
+@import "@fontsource-variable/space-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ---- MONOLITH raw design tokens (the visual source of truth) ---- */
+:root {
+  /* surfaces — near-black, faintly cool */
+  --bg: #07080a;
+  --bg-1: #0b0d10; /* panels */
+  --bg-2: #101317; /* raised */
+  --bg-3: #161a20; /* hover */
+
+  /* hairlines */
+  --line: rgba(255, 255, 255, 0.075);
+  --line-2: rgba(255, 255, 255, 0.14);
+  --line-3: rgba(255, 255, 255, 0.28);
+
+  /* text */
+  --txt: #eef1f4;
+  --txt-2: #9aa1ab;
+  --txt-3: #5a616b;
+  --txt-4: #3a3f47;
+
+  /* accent — acid lime */
+  --accent: #c8ff2e;
+  --accent-ink: #0a0c05;
+  --accent-dim: color-mix(in srgb, var(--accent) 13%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 42%, transparent);
+
+  /* semantic */
+  --danger: #ff5a52;
+  --warn: #ffb02e;
+  --ok: #34e29a;
+  --info: #5b9dff;
+
+  --radius: 0px;
+
+  --font-mono-stack: "JetBrains Mono Variable", ui-monospace, monospace;
+  --font-display-stack: "Space Grotesk Variable", system-ui, sans-serif;
+
+  /* ---- shadcn semantic tokens, re-mapped onto the MONOLITH palette ---- */
+  --background: var(--bg);
+  --foreground: var(--txt);
+  --card: var(--bg-1);
+  --card-foreground: var(--txt);
+  --popover: var(--bg-1);
+  --popover-foreground: var(--txt);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-ink);
+  --secondary: var(--bg-2);
+  --secondary-foreground: var(--txt);
+  --muted: var(--bg-2);
+  --muted-foreground: var(--txt-2);
+  --accent-bg: var(--bg-3);
+  --accent-foreground: var(--txt);
+  --destructive: var(--danger);
+  --destructive-foreground: #ffffff;
+  --border: var(--line-2);
+  --input: var(--line-2);
+  --ring: var(--accent);
+}
+
+/* Light mode — toggled by adding `.light` to <body>. */
+body.light {
+  --bg: #eceae4;
+  --bg-1: #f4f2ec;
+  --bg-2: #fbfaf6;
+  --bg-3: #ffffff;
+  --line: rgba(0, 0, 0, 0.1);
+  --line-2: rgba(0, 0, 0, 0.18);
+  --line-3: rgba(0, 0, 0, 0.34);
+  --txt: #16181c;
+  --txt-2: #565c66;
+  --txt-3: #8b919b;
+  --txt-4: #b6bac1;
+  --accent-ink: #0a0c05;
+}
+
+/* ---- map tokens into Tailwind's theme so utilities + shadcn components work ---- */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent-bg);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* raw MONOLITH tokens exposed as Tailwind colors (bg-bg-1, text-txt-2, …) */
+  --color-bg: var(--bg);
+  --color-bg-1: var(--bg-1);
+  --color-bg-2: var(--bg-2);
+  --color-bg-3: var(--bg-3);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-line-3: var(--line-3);
+  --color-txt: var(--txt);
+  --color-txt-2: var(--txt-2);
+  --color-txt-3: var(--txt-3);
+  --color-txt-4: var(--txt-4);
+  --color-acc: var(--accent);
+  --color-acc-ink: var(--accent-ink);
+  --color-acc-dim: var(--accent-dim);
+  --color-acc-line: var(--accent-line);
+  --color-danger: var(--danger);
+  --color-warn: var(--warn);
+  --color-ok: var(--ok);
+  --color-info: var(--info);
+
+  --font-sans: var(--font-display-stack);
+  --font-mono: var(--font-mono-stack);
+  --font-display: var(--font-display-stack);
+
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+}
+
+/* ---- minimal base: only what cannot be expressed per-element ---- */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg text-txt font-mono text-[13px] leading-[1.45] antialiased select-none overflow-hidden;
+  }
+  button {
+    color: inherit;
+    font-family: var(--font-mono);
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  /* brutalist thin scrollbars (pseudo-elements can't be done in utilities) */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-2);
+    border: 3px solid var(--bg);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--line-3);
+  }
+}

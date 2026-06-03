@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-capability",
+  "description": "Mobile vault companion — QR scanner access for local encrypted device pairing.",
+  "windows": ["main"],
+  "platforms": ["iOS", "android"],
+  "permissions": [
+    "core:default",
+    "barcode-scanner:allow-scan",
+    "barcode-scanner:allow-cancel",
+    "barcode-scanner:allow-check-permissions",
+    "barcode-scanner:allow-request-permissions",
+    "barcode-scanner:allow-open-app-settings"
+  ]
+}

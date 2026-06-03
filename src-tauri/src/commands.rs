@@ -1,0 +1,654 @@
+//! The Tauri command surface — the only bridge between the frontend and the
+//! vault core. Each command is small, validates input, and returns a typed
+//! `Result<T, AppError>`. The unlocked vault key only crosses this boundary
+//! inside the app-layer encrypted local pairing package.
+
+use secrecy::SecretString;
+use tauri::State;
+use time::format_description::well_known::Rfc3339;
+
+use crate::db::repo;
+use crate::error::{AppError, AppResult};
+use crate::models::*;
+use crate::pairing;
+use crate::state::AppState;
+use crate::templates::{self, Template};
+use crate::vault::{self, crypto, VaultKey};
+
+/// Whether a vault exists and whether it's currently unlocked.
+#[tauri::command]
+pub fn vault_status(state: State<'_, AppState>) -> AppResult<VaultStatus> {
+    state.with(|inner| {
+        let initialized = crate::db::is_initialized(&inner.conn)?;
+        let unlocked = inner.key.is_some();
+        let item_count = if unlocked {
+            repo::item_count(&inner.conn)?
+        } else {
+            0
+        };
+        let vault_id = if initialized {
+            repo::vault_id(&inner.conn)?
+        } else {
+            None
+        };
+        Ok(VaultStatus {
+            initialized,
+            unlocked,
+            item_count,
+            vault_id,
+        })
+    })
+}
+
+#[tauri::command]
+pub fn app_platform() -> &'static str {
+    #[cfg(target_os = "android")]
+    {
+        "android"
+    }
+    #[cfg(target_os = "ios")]
+    {
+        "ios"
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        "desktop"
+    }
+}
+
+/// Enforce the master-password policy in Rust — the command layer is the real
+/// boundary, so this must match (and not merely trust) the onboarding UI checks.
+fn validate_master_password(pw: &str) -> AppResult<()> {
+    let long_enough = pw.chars().count() >= 12;
+    let has_upper = pw.chars().any(|c| c.is_uppercase());
+    let has_digit = pw.chars().any(|c| c.is_ascii_digit());
+    let has_symbol = pw.chars().any(|c| !c.is_alphanumeric());
+    if long_enough && has_upper && has_digit && has_symbol {
+        Ok(())
+    } else {
+        Err(AppError::Invalid(
+            "Master password must be at least 12 characters and include an uppercase letter, a number, and a symbol".into(),
+        ))
+    }
+}
+
+/// First run: create a new vault from a master password. `seed_demo` controls
+/// whether the example projects are inserted (the UI offers this as a choice).
+#[tauri::command]
+pub fn create_vault(
+    master_password: String,
+    seed_demo: bool,
+    state: State<'_, AppState>,
+) -> AppResult<VaultStatus> {
+    validate_master_password(&master_password)?;
+    let secret: SecretString = master_password.into();
+
+    state.with(|inner| {
+        if crate::db::is_initialized(&inner.conn)? {
+            return Err(AppError::VaultState("A vault already exists".into()));
+        }
+        let (header, key) = vault::create(&secret)?;
+        repo::initialize_vault(&inner.conn, &header, &key, seed_demo)?;
+        repo::ensure_personal_project(&inner.conn)?;
+        let item_count = repo::item_count(&inner.conn)?;
+        inner.key = Some(key);
+        Ok(VaultStatus {
+            initialized: true,
+            unlocked: true,
+            item_count,
+            vault_id: repo::vault_id(&inner.conn)?,
+        })
+    })
+}
+
+/// Unlock an existing vault with the master password.
+#[tauri::command]
+pub fn unlock_vault(master_password: String, state: State<'_, AppState>) -> AppResult<VaultStatus> {
+    let secret: SecretString = master_password.into();
+    state.with(|inner| {
+        let header = repo::load_header(&inner.conn)?
+            .ok_or_else(|| AppError::VaultState("No vault to unlock".into()))?;
+        let key = vault::unlock(&secret, &header)?;
+        repo::ensure_personal_project(&inner.conn)?;
+        let item_count = repo::item_count(&inner.conn)?;
+        inner.key = Some(key);
+        Ok(VaultStatus {
+            initialized: true,
+            unlocked: true,
+            item_count,
+            vault_id: repo::vault_id(&inner.conn)?,
+        })
+    })
+}
+
+/// Lock the vault: drop and zeroize the in-memory key.
+#[tauri::command]
+pub fn lock_vault(state: State<'_, AppState>) -> AppResult<()> {
+    state.with(|inner| {
+        inner.key = None; // VaultKey::drop zeroizes
+        Ok(())
+    })
+}
+
+// --- read views ---
+
+/// List all projects (card previews, counts, attachments).
+#[tauri::command]
+pub fn list_projects(state: State<'_, AppState>) -> AppResult<Vec<Project>> {
+    state.with_unlocked(|conn, _key| repo::list_projects(conn))
+}
+
+/// List a project's services with fields and strength.
+#[tauri::command]
+pub fn list_services(project_id: String, state: State<'_, AppState>) -> AppResult<Vec<Service>> {
+    state.with_unlocked(|conn, _key| repo::list_services(conn, &project_id))
+}
+
+/// Flattened items across all projects (for the All Items browser + home).
+#[tauri::command]
+pub fn list_items(state: State<'_, AppState>) -> AppResult<Vec<Item>> {
+    state.with_unlocked(|conn, _key| repo::list_items(conn))
+}
+
+/// Recent activity entries.
+#[tauri::command]
+pub fn list_activity(state: State<'_, AppState>) -> AppResult<Vec<Activity>> {
+    state.with_unlocked(|conn, _key| repo::list_activity(conn, 12))
+}
+
+/// The full template catalog (for the Add Service modal).
+#[tauri::command]
+pub fn list_templates() -> Vec<Template> {
+    templates::catalog()
+}
+
+// --- mutations ---
+
+/// Create a project. Returns the created project view.
+#[tauri::command]
+pub fn create_project(input: CreateProjectInput, state: State<'_, AppState>) -> AppResult<Project> {
+    if input.name.trim().is_empty() {
+        return Err(AppError::Invalid("Project name is required".into()));
+    }
+    state.with_unlocked(|conn, _key| {
+        let id = repo::create_project(conn, &input)?;
+        repo::get_project(conn, &id)?
+            .ok_or_else(|| AppError::Other("project not found after create".into()))
+    })
+}
+
+/// Edit project metadata. Returns the updated project view.
+#[tauri::command]
+pub fn update_project(input: UpdateProjectInput, state: State<'_, AppState>) -> AppResult<Project> {
+    if input.name.trim().is_empty() {
+        return Err(AppError::Invalid("Project name is required".into()));
+    }
+    state.with_unlocked(|conn, _key| {
+        repo::update_project(conn, &input)?;
+        repo::get_project(conn, &input.project_id)?
+            .ok_or_else(|| AppError::Other("project not found after update".into()))
+    })
+}
+
+/// Set (or clear, when `icon` is `None`) a project's icon.
+#[tauri::command]
+pub fn set_project_icon(
+    project_id: String,
+    icon: Option<ProjectIcon>,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    state.with_unlocked(|conn, _key| repo::set_project_icon(conn, &project_id, icon.as_ref()))
+}
+
+/// Delete a project and all service data inside it. The Personal vault is protected.
+#[tauri::command]
+pub fn delete_project(project_id: String, state: State<'_, AppState>) -> AppResult<()> {
+    state.with_unlocked(|conn, _key| repo::delete_project(conn, &project_id))
+}
+
+/// Persist a new project order (drag-to-reorder).
+#[tauri::command]
+pub fn reorder_projects(ordered_ids: Vec<String>, state: State<'_, AppState>) -> AppResult<()> {
+    state.with_unlocked(|conn, _key| repo::reorder_projects(conn, &ordered_ids))
+}
+
+/// Add a service from a template, sealing its secret values. Returns the new id.
+#[tauri::command]
+pub fn add_service(input: AddServiceInput, state: State<'_, AppState>) -> AppResult<String> {
+    state.with_unlocked(|conn, key| repo::add_service(conn, key, &input))
+}
+
+const MAX_AGENT_IMPORT_ITEMS: usize = 500;
+
+enum AgentImportAction {
+    Created,
+    Updated,
+    Skipped,
+}
+
+fn non_empty(value: Option<&String>) -> Option<&str> {
+    value.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
+fn truncate_chars(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
+}
+
+fn derive_import_label(item: &AgentImportItem, template: &Template) -> String {
+    let explicit = item.label.trim();
+    if !explicit.is_empty() {
+        return truncate_chars(explicit, 80);
+    }
+
+    const PREFERRED: &[&str] = &[
+        "Account Email",
+        "Email / Username",
+        "Username",
+        "Project ID",
+        "Store URL",
+        "URL",
+        "Host",
+        "Account ID",
+        "Client ID",
+    ];
+    for label in PREFERRED {
+        let Some(tf) = template
+            .fields
+            .iter()
+            .find(|f| f.label == *label && !f.secret)
+        else {
+            continue;
+        };
+        if let Some(value) = item
+            .fields
+            .iter()
+            .find(|field| field.label == tf.label)
+            .map(|field| field.value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return truncate_chars(value, 80);
+        }
+    }
+
+    String::new()
+}
+
+fn import_project_id(
+    conn: &rusqlite::Connection,
+    bundle: &AgentImportBundle,
+    item: &AgentImportItem,
+) -> AppResult<String> {
+    if let Some(project_id) = non_empty(item.project_id.as_ref())
+        .or_else(|| non_empty(bundle.default_project_id.as_ref()))
+    {
+        if project_id == repo::PERSONAL_PROJECT_ID {
+            repo::ensure_personal_project(conn)?;
+            return Ok(repo::PERSONAL_PROJECT_ID.to_string());
+        }
+        if repo::project_exists(conn, project_id)? {
+            return Ok(project_id.to_string());
+        }
+        return Err(AppError::NotFound(format!("project {project_id}")));
+    }
+
+    if let Some(project_name) = non_empty(item.project_name.as_ref())
+        .or_else(|| non_empty(bundle.default_project_name.as_ref()))
+    {
+        return repo::ensure_project_by_name(conn, project_name);
+    }
+
+    repo::ensure_personal_project(conn)?;
+    Ok(repo::PERSONAL_PROJECT_ID.to_string())
+}
+
+fn import_agent_item(
+    conn: &rusqlite::Connection,
+    key: &VaultKey,
+    bundle: &AgentImportBundle,
+    item: &AgentImportItem,
+) -> AppResult<AgentImportAction> {
+    let template_id = item.template_id.trim();
+    if template_id.is_empty() {
+        return Err(AppError::Invalid("templateId is required".into()));
+    }
+    let template = templates::find(template_id)
+        .ok_or_else(|| AppError::NotFound(format!("template {template_id}")))?;
+    if non_empty(item.source.as_ref()).is_some_and(|source| source.chars().count() > 512) {
+        return Err(AppError::Invalid("source is too long".into()));
+    }
+    let project_id = import_project_id(conn, bundle, item)?;
+    let label = derive_import_label(item, &template);
+    let has_payload = item
+        .fields
+        .iter()
+        .any(|field| !field.value.trim().is_empty())
+        || item
+            .totp_secret
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|secret| !secret.is_empty());
+    if !has_payload && label.is_empty() {
+        return Ok(AgentImportAction::Skipped);
+    }
+
+    if let Some(service_id) =
+        repo::find_service_id_by_identity(conn, &project_id, template.id, &label)?
+    {
+        repo::update_service(
+            conn,
+            key,
+            &UpdateServiceInput {
+                service_id,
+                label,
+                env: item.env,
+                expires_at: item.expires_at.clone(),
+                fields: item.fields.clone(),
+                totp_secret: item.totp_secret.clone(),
+            },
+        )?;
+        Ok(AgentImportAction::Updated)
+    } else {
+        repo::add_service(
+            conn,
+            key,
+            &AddServiceInput {
+                project_id,
+                template_id: template.id.to_string(),
+                label,
+                env: item.env,
+                expires_at: item.expires_at.clone(),
+                fields: item.fields.clone(),
+                totp_secret: item.totp_secret.clone(),
+            },
+        )?;
+        Ok(AgentImportAction::Created)
+    }
+}
+
+/// Import a local agent-generated JSON bundle. Secrets stay inside this command
+/// path and are encrypted by the same repo functions as manual service edits.
+#[tauri::command]
+pub fn import_agent_bundle(
+    bundle: AgentImportBundle,
+    state: State<'_, AppState>,
+) -> AppResult<AgentImportResult> {
+    if bundle.version.unwrap_or(1) != 1 {
+        return Err(AppError::Invalid(
+            "Agent import bundle version must be 1".into(),
+        ));
+    }
+    if bundle.items.is_empty() {
+        return Err(AppError::Invalid("Agent import bundle has no items".into()));
+    }
+    if bundle.items.len() > MAX_AGENT_IMPORT_ITEMS {
+        return Err(AppError::Invalid(format!(
+            "Agent import bundle is limited to {MAX_AGENT_IMPORT_ITEMS} items"
+        )));
+    }
+
+    state.with_unlocked(|conn, key| {
+        let mut result = AgentImportResult {
+            created: 0,
+            updated: 0,
+            skipped: 0,
+            errors: Vec::new(),
+        };
+        for (index, item) in bundle.items.iter().enumerate() {
+            let template_label = templates::find(item.template_id.trim())
+                .map(|t| t.name.to_string())
+                .unwrap_or_else(|| "Item".to_string());
+            let safe_label = if item.label.trim().is_empty() {
+                template_label
+            } else {
+                truncate_chars(item.label.trim(), 80)
+            };
+            match import_agent_item(conn, key, &bundle, item) {
+                Ok(AgentImportAction::Created) => result.created += 1,
+                Ok(AgentImportAction::Updated) => result.updated += 1,
+                Ok(AgentImportAction::Skipped) => result.skipped += 1,
+                Err(err) => result.errors.push(AgentImportError {
+                    index,
+                    label: safe_label,
+                    message: err.to_string(),
+                }),
+            }
+        }
+        let imported = result.created + result.updated;
+        if imported > 0 {
+            let source = non_empty(bundle.source.as_ref()).unwrap_or("agent bundle");
+            repo::log_activity(
+                conn,
+                "IMPORT",
+                &format!("{source} · {imported} credentials"),
+                "add",
+            )
+            .ok();
+        }
+        Ok(result)
+    })
+}
+
+/// Edit a service and archive replaced secret values.
+#[tauri::command]
+pub fn update_service(input: UpdateServiceInput, state: State<'_, AppState>) -> AppResult<Service> {
+    state.with_unlocked(|conn, key| repo::update_service(conn, key, &input))
+}
+
+/// Remove a service.
+#[tauri::command]
+pub fn delete_service(service_id: String, state: State<'_, AppState>) -> AppResult<()> {
+    state.with_unlocked(|conn, _key| repo::delete_service(conn, &service_id))
+}
+
+/// Reveal a single secret field's plaintext (explicit user action).
+#[tauri::command]
+pub fn reveal_field(field_id: String, state: State<'_, AppState>) -> AppResult<RevealedSecret> {
+    state.with_unlocked(|conn, key| {
+        let revealed = repo::reveal_field(conn, key, &field_id)?;
+        repo::log_activity(conn, "VIEW", "Revealed a secret field", "view").ok();
+        Ok(revealed)
+    })
+}
+
+/// List the encrypted archive entries for a service.
+#[tauri::command]
+pub fn list_password_history(
+    service_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<PasswordHistoryEntry>> {
+    state.with_unlocked(|conn, _key| repo::list_password_history(conn, &service_id))
+}
+
+/// Reveal one archived previous secret value.
+#[tauri::command]
+pub fn reveal_history(history_id: String, state: State<'_, AppState>) -> AppResult<RevealedSecret> {
+    state.with_unlocked(|conn, key| repo::reveal_history(conn, key, &history_id))
+}
+
+/// Generate the current TOTP code for a service.
+#[tauri::command]
+pub fn generate_totp(service_id: String, state: State<'_, AppState>) -> AppResult<TotpCode> {
+    state.with_unlocked(|conn, key| repo::service_totp(conn, key, &service_id))
+}
+
+/// Record an encrypted attachment against a project (metadata only for now).
+#[tauri::command]
+pub fn add_attachment(
+    project_id: String,
+    name: String,
+    size: String,
+    state: State<'_, AppState>,
+) -> AppResult<Attachment> {
+    state.with_unlocked(|conn, _key| repo::add_attachment(conn, &project_id, &name, &size))
+}
+
+/// Storage usage summary based on SQLite page allocation.
+#[tauri::command]
+pub fn storage_usage(state: State<'_, AppState>) -> AppResult<Storage> {
+    state.with_unlocked(|conn, _key| repo::storage_usage(conn))
+}
+
+#[tauri::command]
+pub fn app_settings(state: State<'_, AppState>) -> AppResult<AppSettings> {
+    state.with_unlocked(|conn, _key| repo::app_settings(conn))
+}
+
+#[tauri::command]
+pub fn update_app_settings(
+    input: UpdateAppSettingsInput,
+    state: State<'_, AppState>,
+) -> AppResult<AppSettings> {
+    state.with_unlocked(|conn, _key| repo::update_app_settings(conn, &input))
+}
+
+// --- local QR pairing ---
+
+#[tauri::command]
+pub fn start_pairing_session(state: State<'_, AppState>) -> AppResult<PairingSession> {
+    state.with_unlocked(|_, _| Ok(()))?;
+    pairing::start_session(std::sync::Arc::clone(&state.pairing))
+}
+
+#[tauri::command]
+pub fn pairing_session_status(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<PairingSessionStatus> {
+    pairing::session_status(&state.pairing, &session_id)
+}
+
+#[tauri::command]
+pub fn cancel_pairing_session(session_id: String, state: State<'_, AppState>) -> AppResult<()> {
+    pairing::cancel_session(&state.pairing, &session_id)
+}
+
+#[tauri::command]
+pub fn approve_pairing_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<PairingSessionStatus> {
+    let pending = pairing::pending_device_for_approval(&state.pairing, &session_id)?;
+    let db_path = state.db_path.clone();
+    let package = state.with_unlocked(|conn, key| {
+        repo::upsert_device(
+            conn,
+            &pending.id,
+            &pending.name,
+            &pending.platform,
+            &pending.public_key,
+        )?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        let db_bytes = std::fs::read(&db_path)
+            .map_err(|e| AppError::Other(format!("could not read vault snapshot: {e}")))?;
+        let device_key = crypto::random_key()?;
+        let vault_id = repo::vault_id(conn)?
+            .ok_or_else(|| AppError::VaultState("Vault id is missing".into()))?;
+        Ok(pairing::PairingTransferPackage {
+            vault_id,
+            device_id: pending.id.clone(),
+            device_key: pairing::encode(&device_key),
+            vault_key: pairing::encode(key.expose()),
+            db: pairing::encode(&db_bytes),
+            created_at: time::OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default(),
+        })
+    })?;
+    let envelope = pairing::create_envelope(
+        &session_id,
+        &pending.code,
+        pending.desktop_secret,
+        &pending.public_key,
+        &pending.id,
+        &package,
+    )?;
+    pairing::approve_session(&state.pairing, &session_id, envelope)?;
+    pairing::session_status(&state.pairing, &session_id)
+}
+
+#[tauri::command]
+pub fn list_devices(state: State<'_, AppState>) -> AppResult<Vec<PairedDevice>> {
+    state.with_unlocked(|conn, _| repo::list_devices(conn))
+}
+
+#[tauri::command]
+pub fn revoke_device(device_id: String, state: State<'_, AppState>) -> AppResult<()> {
+    state.with_unlocked(|conn, _| repo::revoke_device(conn, &device_id))
+}
+
+#[tauri::command]
+pub fn complete_pairing(
+    input: CompletePairingInput,
+    state: State<'_, AppState>,
+) -> AppResult<PairingImportResult> {
+    let qr = pairing::parse_qr_payload(&input.qr_payload)?;
+    let device_id = format!("dev_{}", uuid::Uuid::new_v4().simple());
+    let device_name = if input.device_name.trim().is_empty() {
+        "Android phone".to_string()
+    } else {
+        input.device_name.trim().to_string()
+    };
+    let package = pairing::fetch_and_decrypt_pairing(&qr, &device_id, &device_name, "android")?;
+    if package.device_id != device_id {
+        return Err(AppError::Invalid("Pairing package device mismatch".into()));
+    }
+    let db_bytes = pairing::decode(&package.db)?;
+    let vault_key = pairing::bytes32_from_b64(&package.vault_key, "vault key")?;
+    let device_key = pairing::bytes32_from_b64(&package.device_key, "device key")?;
+    let db_path = state.db_path.clone();
+
+    state.with(|inner| {
+        inner.key = None;
+        let temp = rusqlite::Connection::open_in_memory()?;
+        let old = std::mem::replace(&mut inner.conn, temp);
+        drop(old);
+
+        for suffix in ["", "-wal", "-shm"] {
+            let path = if suffix.is_empty() {
+                db_path.clone()
+            } else {
+                db_path.with_file_name(format!(
+                    "{}{suffix}",
+                    db_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("monolith.vault.db")
+                ))
+            };
+            let _ = std::fs::remove_file(path);
+        }
+        std::fs::write(&db_path, &db_bytes)
+            .map_err(|e| AppError::Other(format!("could not import paired vault: {e}")))?;
+        let conn = crate::db::open(&db_path)?;
+        repo::check_schema(&conn)?;
+        repo::store_device_unlock(&conn, &device_id, &device_key, &vault_key)?;
+        repo::ensure_personal_project(&conn)?;
+        let item_count = repo::item_count(&conn)?;
+        inner.conn = conn;
+        inner.key = Some(VaultKey::from_bytes(vault_key));
+        Ok(PairingImportResult {
+            vault_id: package.vault_id,
+            device_id,
+            item_count,
+        })
+    })
+}
+
+#[tauri::command]
+pub fn unlock_device_vault(
+    device_key: String,
+    state: State<'_, AppState>,
+) -> AppResult<VaultStatus> {
+    state.with(|inner| {
+        let device_key = pairing::bytes32_from_b64(device_key.trim(), "device key")?;
+        let vault_key = repo::load_device_unlock(&inner.conn, &device_key)?
+            .ok_or_else(|| AppError::VaultState("No paired device unlock is stored".into()))?;
+        inner.key = Some(VaultKey::from_bytes(vault_key));
+        Ok(VaultStatus {
+            initialized: true,
+            unlocked: true,
+            item_count: repo::item_count(&inner.conn)?,
+            vault_id: repo::vault_id(&inner.conn)?,
+        })
+    })
+}

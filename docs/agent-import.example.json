@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "source": "example only",
+  "defaultProjectName": "Personal",
+  "items": [
+    {
+      "templateId": "zeroid",
+      "label": "main",
+      "env": "all",
+      "fields": [
+        { "label": "Client ID", "value": "zeroid-client-example" },
+        { "label": "Client Secret", "value": "zeroid-secret-example" },
+        { "label": "Issuer URL", "value": "https://issuer.example.com" },
+        { "label": "Account Email", "value": "you@example.com" }
+      ]
+    },
+    {
+      "templateId": "login",
+      "label": "instagram-main",
+      "fields": [
+        { "label": "URL", "value": "https://instagram.com" },
+        { "label": "Email / Username", "value": "you@example.com" },
+        { "label": "Password", "value": "example-password" }
+      ]
+    },
+    {
+      "projectName": "Nimbus",
+      "templateId": "github",
+      "label": "nimbus-web",
+      "fields": [
+        { "label": "Username", "value": "example-user" },
+        { "label": "Personal Access Token", "value": "ghp_example" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Main vault window — least-privilege: window controls and clipboard write/clear only; no clipboard read, file dialogs, shell, or filesystem access.",
+  "windows": ["main"],
+  "platforms": ["linux", "macOS", "windows"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-clear",
+    "updater:allow-check",
+    "updater:allow-download-and-install",
+    "process:allow-restart"
+  ]
+}
