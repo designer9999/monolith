@@ -8,11 +8,12 @@
 
 import { Fragment, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 
-import { listTemplates, revealField } from "@/lib/tauri";
+import { listFieldSuggestions, listTemplates, revealField } from "@/lib/tauri";
 import type {
   AppError,
   CreateProjectInput,
   Environment,
+  FieldSuggestion,
   Project,
   Service,
   ServiceFieldInput,
@@ -21,6 +22,7 @@ import type {
 } from "@/lib/types";
 import { Icon } from "@/lib/icons";
 import { EXPIRATION_PRESETS, formatDateOnly, isoDateAfter } from "@/lib/expiration";
+import { maskOf } from "@/lib/format";
 import {
   credentialAssistFor,
   credentialFieldHint,
@@ -416,6 +418,11 @@ export function ServiceCatalog({
                 value={vals[f.label] || ""}
                 onChange={(v) => setVals((s) => ({ ...s, [f.label]: v }))}
                 placeholder={credentialPlaceholder(f.label, f.fieldType, f.secret, f.area)}
+                reuse={
+                  project && !project.personal
+                    ? { projectId: project.id, fieldLabel: f.label }
+                    : undefined
+                }
               />
               {fieldAssist && (
                 <CredentialAutofillPanel
@@ -678,6 +685,11 @@ export function EditService({
                 field.area,
                 field.hasValue,
               )}
+              reuse={
+                service.projectId !== "p_personal"
+                  ? { projectId: service.projectId, fieldLabel: field.label }
+                  : undefined
+              }
             />
             {fieldAssist && (
               <CredentialAutofillPanel
@@ -984,6 +996,7 @@ function FormField({
   autoFocus,
   initiallyRevealed = false,
   totpQr,
+  reuse,
 }: {
   label: string;
   value: string;
@@ -995,14 +1008,50 @@ function FormField({
   autoFocus?: boolean;
   initiallyRevealed?: boolean;
   totpQr?: boolean;
+  reuse?: { projectId: string; fieldLabel: string };
 }) {
   const [show, setShow] = useState(initiallyRevealed);
   const [qrStatus, setQrStatus] = useState<"idle" | "reading" | "ok" | "error">("idle");
   const [qrMessage, setQrMessage] = useState<string | null>(null);
+  const [reuseOpen, setReuseOpen] = useState(false);
+  const [reuseQuery, setReuseQuery] = useState("");
+  const [reuseItems, setReuseItems] = useState<FieldSuggestion[]>([]);
+  const [reuseBusy, setReuseBusy] = useState(false);
+  const [reuseError, setReuseError] = useState<string | null>(null);
 
   useEffect(() => {
     if (secret) setShow(initiallyRevealed);
   }, [initiallyRevealed, secret]);
+
+  useEffect(() => {
+    if (!reuseOpen || !reuse) return;
+    let alive = true;
+    setReuseBusy(true);
+    setReuseError(null);
+    void listFieldSuggestions(reuse.projectId, reuse.fieldLabel, reuseQuery)
+      .then((items) => {
+        if (alive) setReuseItems(items);
+      })
+      .catch((err) => {
+        if (alive) {
+          setReuseItems([]);
+          setReuseError((err as AppError)?.message ?? "Could not load reusable values.");
+        }
+      })
+      .finally(() => {
+        if (alive) setReuseBusy(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [reuse?.fieldLabel, reuse?.projectId, reuseOpen, reuseQuery]);
+
+  useEffect(() => {
+    if (reuse) return;
+    setReuseOpen(false);
+    setReuseQuery("");
+    setReuseItems([]);
+  }, [reuse]);
 
   const applyTotpSecret = (result: ReturnType<typeof extractTotpSecret>) => {
     onChange(result.secret);
@@ -1051,6 +1100,21 @@ function FormField({
       <Lbl className="mb-1.5 flex flex-wrap items-center gap-2">
         <span>{label}</span>
         {hint && <span className="text-acc">{hint}</span>}
+        {reuse && (
+          <button
+            type="button"
+            title={`Reuse ${label} from this project`}
+            onClick={() => setReuseOpen((open) => !open)}
+            className={
+              "inline-flex items-center gap-1 border px-1.5 py-px text-[9px] tracking-[0.12em] transition-colors " +
+              (reuseOpen
+                ? "border-acc-line text-acc"
+                : "border-line-2 text-txt-3 hover:border-acc-line hover:text-acc")
+            }
+          >
+            <Icon name="chevd" size={10} /> Reuse
+          </button>
+        )}
       </Lbl>
       <div className="flex min-h-[44px] items-center gap-2 border border-line-2 bg-bg">
         {area ? (
@@ -1083,6 +1147,58 @@ function FormField({
           </button>
         )}
       </div>
+      {reuseOpen && reuse && (
+        <div className="mt-1.5 border border-line-2 bg-bg-1">
+          <div className="flex items-center gap-2 border-b border-line px-2 py-2">
+            <Icon name="search" size={12} className="text-txt-3" />
+            <input
+              value={reuseQuery}
+              onChange={(event) => setReuseQuery(event.target.value)}
+              placeholder={`SEARCH ${label.toUpperCase()}...`}
+              className="min-w-0 flex-1 border-none bg-transparent font-mono text-[10px] uppercase tracking-[0.08em] text-txt outline-none placeholder:text-txt-4"
+            />
+            {reuseQuery && (
+              <button type="button" onClick={() => setReuseQuery("")} className="text-txt-3 hover:text-txt">
+                <Icon name="x" size={11} />
+              </button>
+            )}
+          </div>
+          <div className="max-h-[196px] overflow-y-auto">
+            {reuseBusy && <div className="px-2 py-2 font-mono text-[10px] uppercase tracking-[0.08em] text-txt-4">Loading values...</div>}
+            {reuseError && <div className="px-2 py-2 font-mono text-[10px] uppercase tracking-[0.08em] text-danger">{reuseError}</div>}
+            {!reuseBusy && !reuseError && reuseItems.length === 0 && (
+              <div className="px-2 py-2 font-mono text-[10px] uppercase tracking-[0.08em] text-txt-4">No reusable values in this project.</div>
+            )}
+            {!reuseBusy &&
+              !reuseError &&
+              reuseItems.map((item) => (
+                <button
+                  key={item.fieldId}
+                  type="button"
+                  onClick={() => {
+                    onChange(item.value);
+                    if (secret) setShow(true);
+                    setReuseOpen(false);
+                    setReuseQuery("");
+                  }}
+                  className="grid w-full grid-cols-[1fr_auto] items-center gap-3 border-b border-line px-2 py-2 text-left last:border-b-0 hover:bg-bg-2"
+                >
+                  <span className="min-w-0">
+                    <span className="block overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.08em] text-txt">
+                      {item.serviceTitle}
+                    </span>
+                    <span className="mt-0.5 block overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[9px] uppercase tracking-[0.1em] text-txt-4">
+                      {item.fieldLabel} · {item.templateName}
+                    </span>
+                  </span>
+                  <span className="max-w-[210px] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[10px] text-txt-2">
+                    {item.secret ? maskOf(item.value || "x".repeat(12)) : item.value}
+                  </span>
+                </button>
+              ))}
+          </div>
+        </div>
+      )}
       {totpQr && (
         <div
           className={

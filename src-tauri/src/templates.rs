@@ -139,6 +139,7 @@ pub fn catalog() -> Vec<Template> {
             fields: vec![
                 F::new("Username", false),
                 F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("Personal Access Token", true).danger().ty(ApiKey),
                 F::new("SSH Private Key", true).area(),
                 F::new("Webhook Secret", true),
@@ -157,6 +158,7 @@ pub fn catalog() -> Vec<Template> {
             group: "Hosting",
             fields: vec![
                 F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("Access Token", true).danger().ty(ApiKey),
                 F::new("Team ID", false),
                 F::new("Project ID", false),
@@ -191,6 +193,7 @@ pub fn catalog() -> Vec<Template> {
             group: "Infra",
             fields: vec![
                 F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("API Token", true).danger().ty(ApiKey),
                 F::new("Global API Key", true).danger(),
                 F::new("Zone ID", false),
@@ -372,6 +375,7 @@ pub fn catalog() -> Vec<Template> {
             fields: vec![
                 F::new("Username", false),
                 F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("Access Token", true).danger().ty(ApiKey),
                 F::new("Organization", false),
             ],
@@ -516,6 +520,7 @@ pub fn catalog() -> Vec<Template> {
                 F::new("API Key", true).danger().ty(ApiKey),
                 F::new("Endpoint ID", false),
                 F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
             ],
         },
         Template {

@@ -187,6 +187,23 @@ pub struct RevealedSecret {
     pub value: String,
 }
 
+/// A project-scoped reusable field value shown only inside add/edit forms.
+/// Secret suggestions are decrypted only for this explicit command while the
+/// vault is unlocked.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldSuggestion {
+    pub field_id: String,
+    pub service_id: String,
+    pub service_title: String,
+    pub template_name: String,
+    pub field_label: String,
+    pub field_type: FieldType,
+    pub secret: bool,
+    pub value: String,
+    pub updated: String,
+}
+
 /// One archived previous secret value. The value itself is revealed through a
 /// separate explicit command, just like the active secret field.
 #[derive(Debug, Clone, Serialize)]

@@ -55,11 +55,13 @@ function serviceSearchText(service: Service): string {
     service.env,
     service.group,
     service.expiresAt ?? "",
-    ...service.fields.flatMap((field) => [
-      field.label,
-      field.fieldType,
-      field.secret ? "" : field.value ?? "",
-    ]),
+    ...service.fields
+      .filter((field) => field.hasValue)
+      .flatMap((field) => [
+        field.label,
+        field.fieldType,
+        field.secret ? "" : field.value ?? "",
+      ]),
   ]
     .join(" ")
     .toLowerCase();
@@ -425,6 +427,7 @@ function ServicePanel({
   const exp = expirationInfo(service.expiresAt);
   const risky = exp.tone === "expired" || exp.tone === "soon" || service.exposed || service.reused;
   const urgent = service.exposed || exp.tone === "expired";
+  const visibleFields = service.fields.filter((field) => field.hasValue);
   const attentionText = service.exposed
     ? "Credential found in a known breach — rotate now."
     : service.reused
@@ -494,7 +497,7 @@ function ServicePanel({
             )}
           </div>
           <Lbl className="mt-[5px] text-txt-4">
-            {service.fields.length} FIELDS · UPDATED {fmtDate(service.updated)}
+            {visibleFields.length} FIELDS · UPDATED {fmtDate(service.updated)}
           </Lbl>
         </div>
         <span className={`text-txt-3 transition-transform duration-150 ${open ? "rotate-180" : ""}`}>
@@ -526,17 +529,23 @@ function ServicePanel({
             </div>
           )}
           <Lbl className="pt-[18px] pb-0.5">Credentials</Lbl>
-          {service.fields.map((f, i) => (
-            <FieldRow
-              key={f.id}
-              field={f}
-              idx={i}
-              copy={copy}
-              copied={copied}
-              revealByDefault={revealSecretsByDefault}
-              onSave={onFieldSave}
-            />
-          ))}
+          {visibleFields.length ? (
+            visibleFields.map((f, i) => (
+              <FieldRow
+                key={f.id}
+                field={f}
+                idx={i}
+                copy={copy}
+                copied={copied}
+                revealByDefault={revealSecretsByDefault}
+                onSave={onFieldSave}
+              />
+            ))
+          ) : (
+            <div className="border-b border-line py-4 font-mono text-[10px] uppercase tracking-[0.12em] text-txt-4">
+              No populated fields yet.
+            </div>
+          )}
           <PasswordArchive serviceId={service.id} copy={copy} copied={copied} />
           <div className="mt-4 flex items-center gap-2">
             <Btn variant="ghost" className="text-[10px]" onClick={onEdit}>

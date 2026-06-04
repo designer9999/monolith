@@ -7,6 +7,7 @@
 //! paths.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use zeroize::Zeroize;
@@ -234,6 +235,39 @@ fn validate_expiration(expires_at: Option<&str>) -> AppResult<Option<String>> {
 fn is_password_label(label: &str) -> bool {
     let label = label.to_ascii_lowercase();
     label.contains("password") || label.contains("passphrase") || label.contains("pin")
+}
+
+fn is_email_label(label: &str) -> bool {
+    label.to_ascii_lowercase().contains("email")
+}
+
+fn is_username_label(label: &str) -> bool {
+    let label = label.to_ascii_lowercase();
+    label.contains("username") || label == "user" || label.ends_with(" user")
+}
+
+fn same_reuse_family(target_label: &str, candidate_label: &str, candidate_type: FieldType) -> bool {
+    let target = target_label.to_ascii_lowercase();
+    let candidate = candidate_label.to_ascii_lowercase();
+    if is_password_label(&target) {
+        return is_password_label(&candidate);
+    }
+    if is_email_label(&target) {
+        return candidate_type == FieldType::Email || is_email_label(&candidate);
+    }
+    if is_username_label(&target) {
+        return is_username_label(&candidate) || candidate == "email / username";
+    }
+    if target.contains("url") {
+        return candidate_type == FieldType::Url || candidate.contains("url");
+    }
+    if target.contains("token") {
+        return candidate.contains("token");
+    }
+    if target.contains("key") {
+        return candidate.contains("key");
+    }
+    candidate == target
 }
 
 fn decrypt_secret_string(
@@ -1056,30 +1090,61 @@ fn build_service(conn: &Connection, row: ServiceRow) -> AppResult<Service> {
         ))
     })?;
 
-    let mut fields = Vec::new();
-    let mut danger_any = false;
+    let mut stored_fields: HashMap<String, FieldView> = HashMap::new();
+    let mut stored_order = Vec::new();
 
     for fr in field_rows {
         let (id, label, ftype, is_secret, is_danger, is_area, plain, has_cipher) = fr?;
-        if is_danger {
-            danger_any = true;
-        }
         let has_value = if is_secret {
             has_cipher
         } else {
             plain.as_deref().map(|v| !v.is_empty()).unwrap_or(false)
         };
 
-        fields.push(FieldView {
-            id,
-            label,
-            field_type: parse_field_type(&ftype),
-            secret: is_secret,
-            danger: is_danger,
-            area: is_area,
-            has_value,
-            value: if is_secret { None } else { plain },
-        });
+        stored_order.push(label.clone());
+        stored_fields.insert(
+            label.clone(),
+            FieldView {
+                id,
+                label,
+                field_type: parse_field_type(&ftype),
+                secret: is_secret,
+                danger: is_danger,
+                area: is_area,
+                has_value,
+                value: if is_secret { None } else { plain },
+            },
+        );
+    }
+
+    let mut fields = Vec::new();
+    let mut danger_any = false;
+    for (idx, tf) in template.fields.iter().enumerate() {
+        if let Some(field) = stored_fields.remove(tf.label) {
+            if field.danger && field.has_value {
+                danger_any = true;
+            }
+            fields.push(field);
+        } else {
+            fields.push(FieldView {
+                id: format!("missing_{}_{}", row.id, idx),
+                label: tf.label.to_string(),
+                field_type: tf.field_type,
+                secret: tf.secret,
+                danger: tf.danger,
+                area: tf.area,
+                has_value: false,
+                value: None,
+            });
+        }
+    }
+    for label in stored_order {
+        if let Some(field) = stored_fields.remove(&label) {
+            if field.danger && field.has_value {
+                danger_any = true;
+            }
+            fields.push(field);
+        }
     }
 
     let strength = row.strength;
@@ -1201,6 +1266,7 @@ pub fn update_service(
             fields.push(row?);
         }
     }
+    let existing_labels: HashSet<String> = fields.iter().map(|field| field.label.clone()).collect();
 
     let ts = now();
     let mut strength_scores: Vec<u8> = Vec::new();
@@ -1271,6 +1337,52 @@ pub fn update_service(
                 if strength::is_password_like(&field.label, value) {
                     strength_scores.push(strength::estimate(value));
                 }
+            }
+        }
+
+        for (idx, template_field) in template.fields.iter().enumerate() {
+            if existing_labels.contains(template_field.label) {
+                continue;
+            }
+            let Some(new_value) = field_values
+                .get(template_field.label)
+                .copied()
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            let field_id = format!("f_{}", uuid::Uuid::new_v4().simple());
+            let (plain, nonce, cipher) = if template_field.secret {
+                let aad = field_aad(&project_id, &input.service_id, &field_id);
+                let (nonce, cipher) = crypto::encrypt(key.expose(), new_value.as_bytes(), &aad)?;
+                (None, Some(nonce), Some(cipher))
+            } else {
+                (Some(new_value.to_string()), None, None)
+            };
+
+            conn.execute(
+                "INSERT INTO secret_fields
+                    (id, service_id, label, field_type, is_secret, is_danger, is_area, sort_index, plain_value, nonce, cipher, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    field_id,
+                    input.service_id,
+                    template_field.label,
+                    field_type_str(template_field.field_type),
+                    template_field.secret,
+                    template_field.danger,
+                    template_field.area,
+                    idx as i64,
+                    plain,
+                    nonce,
+                    cipher,
+                    ts,
+                ],
+            )?;
+
+            if strength::is_password_like(template_field.label, new_value) {
+                strength_scores.push(strength::estimate(new_value));
             }
         }
 
@@ -1370,7 +1482,9 @@ pub fn list_items(conn: &Connection) -> AppResult<Vec<Item>> {
             title.clone(),
             env_str(svc.env).to_string(),
         ];
-        for field in &svc.fields {
+        let populated_field_count =
+            svc.fields.iter().filter(|field| field.has_value).count() as i64;
+        for field in svc.fields.iter().filter(|field| field.has_value) {
             tags.push(field.label.clone());
             tags.push(format!("{:?}", field.field_type));
             if !field.secret {
@@ -1396,7 +1510,7 @@ pub fn list_items(conn: &Connection) -> AppResult<Vec<Item>> {
             env: svc.env,
             expires_at: svc.expires_at,
             title,
-            field_count: svc.fields.len() as i64,
+            field_count: populated_field_count,
             totp: svc.totp,
             danger: svc.danger,
             updated: svc.updated,
@@ -1461,6 +1575,147 @@ pub fn reveal_field(
         field_id: field_id.to_string(),
         value,
     })
+}
+
+/// Project-scoped reusable field values for add/edit forms. This is an explicit
+/// reveal path like `reveal_field`, but narrowed to one project and one field
+/// family so users can reuse repeated emails, usernames, passwords, URLs, and
+/// keys without manually copying between services.
+pub fn list_field_suggestions(
+    conn: &Connection,
+    key: &VaultKey,
+    project_id: &str,
+    field_label: &str,
+    query: &str,
+) -> AppResult<Vec<FieldSuggestion>> {
+    const MAX_SUGGESTIONS: usize = 40;
+
+    if project_id == PERSONAL_PROJECT_ID {
+        return Ok(Vec::new());
+    }
+    if !project_exists(conn, project_id)? {
+        return Err(AppError::NotFound(format!("project {project_id}")));
+    }
+
+    let target_label = field_label.trim();
+    if target_label.is_empty() {
+        return Ok(Vec::new());
+    }
+    validate_len("Field search", query, 120)?;
+    let query = query.trim().to_ascii_lowercase();
+
+    struct SuggestionRow {
+        field_id: String,
+        service_id: String,
+        template_id: String,
+        service_label: String,
+        field_label: String,
+        field_type: FieldType,
+        secret: bool,
+        plain: Option<String>,
+        nonce: Option<Vec<u8>>,
+        cipher: Option<Vec<u8>>,
+        updated: String,
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT f.id, s.id, s.template_id, s.label, f.label, f.field_type, f.is_secret,
+                f.plain_value, f.nonce, f.cipher, s.updated_at
+           FROM secret_fields f
+           JOIN services s ON s.id = f.service_id
+          WHERE s.project_id = ?1
+            AND s.deleted_at IS NULL
+            AND f.deleted_at IS NULL
+            AND ((f.is_secret = 1 AND f.cipher IS NOT NULL)
+              OR (f.is_secret = 0 AND COALESCE(f.plain_value, '') <> ''))
+          ORDER BY s.updated_at DESC, f.sort_index ASC",
+    )?;
+    let rows = stmt.query_map(params![project_id], |r| {
+        Ok(SuggestionRow {
+            field_id: r.get(0)?,
+            service_id: r.get(1)?,
+            template_id: r.get(2)?,
+            service_label: r.get(3)?,
+            field_label: r.get(4)?,
+            field_type: parse_field_type(&r.get::<_, String>(5)?),
+            secret: r.get(6)?,
+            plain: r.get(7)?,
+            nonce: r.get(8)?,
+            cipher: r.get(9)?,
+            updated: r.get(10)?,
+        })
+    })?;
+
+    let mut suggestions = Vec::new();
+    let mut seen = HashSet::new();
+    for row in rows {
+        let row = row?;
+        if !same_reuse_family(target_label, &row.field_label, row.field_type) {
+            continue;
+        }
+
+        let mut value = if row.secret {
+            match (&row.nonce, &row.cipher) {
+                (Some(nonce), Some(cipher)) => {
+                    let aad = field_aad(project_id, &row.service_id, &row.field_id);
+                    decrypt_secret_string(key, nonce, cipher, &aad, "secret is not valid UTF-8")?
+                }
+                _ => String::new(),
+            }
+        } else {
+            row.plain.unwrap_or_default()
+        };
+        if value.trim().is_empty() {
+            value.zeroize();
+            continue;
+        }
+
+        let template = templates::find(&row.template_id);
+        let template_name = template
+            .as_ref()
+            .map_or("Service", |template| template.name);
+        let service_title = if row.service_label.trim().is_empty() {
+            template_name.to_string()
+        } else {
+            format!("{template_name} · {}", row.service_label)
+        };
+        let haystack = format!(
+            "{} {} {} {}",
+            service_title, template_name, row.field_label, value
+        )
+        .to_ascii_lowercase();
+        if !query.is_empty() && !haystack.contains(&query) {
+            value.zeroize();
+            continue;
+        }
+
+        let dedupe_key = format!(
+            "{}|{}|{}",
+            row.field_label.to_ascii_lowercase(),
+            row.secret,
+            value
+        );
+        if !seen.insert(dedupe_key) {
+            value.zeroize();
+            continue;
+        }
+
+        suggestions.push(FieldSuggestion {
+            field_id: row.field_id,
+            service_id: row.service_id,
+            service_title,
+            template_name: template_name.to_string(),
+            field_label: row.field_label,
+            field_type: row.field_type,
+            secret: row.secret,
+            value,
+            updated: row.updated,
+        });
+        if suggestions.len() >= MAX_SUGGESTIONS {
+            break;
+        }
+    }
+    Ok(suggestions)
 }
 
 /// List archived previous secret values for a service. Values stay encrypted
@@ -2305,5 +2560,129 @@ mod tests {
                 "Third-Pass-33!".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn update_service_can_fill_template_field_added_after_service_creation() {
+        let (conn, key) = setup();
+        let pid = create_project(
+            &conn,
+            &CreateProjectInput {
+                name: "Dev".into(),
+                sub: "".into(),
+                color: "#5b9dff".into(),
+            },
+        )
+        .unwrap();
+        let svc_id = add_service(
+            &conn,
+            &key,
+            &AddServiceInput {
+                project_id: pid.clone(),
+                template_id: "github".into(),
+                label: "Main".into(),
+                env: Environment::All,
+                expires_at: None,
+                fields: vec![ServiceFieldInput {
+                    label: "Account Email".into(),
+                    value: "dev@example.com".into(),
+                }],
+                totp_secret: None,
+            },
+        )
+        .unwrap();
+
+        conn.execute(
+            "DELETE FROM secret_fields WHERE service_id = ?1 AND label = 'Password'",
+            params![svc_id],
+        )
+        .unwrap();
+
+        let before = get_service(&conn, &svc_id).unwrap();
+        let virtual_password = before
+            .fields
+            .iter()
+            .find(|field| field.label == "Password")
+            .unwrap();
+        assert!(!virtual_password.has_value);
+
+        let updated = update_service(
+            &conn,
+            &key,
+            &UpdateServiceInput {
+                service_id: svc_id.clone(),
+                label: "Main".into(),
+                env: Environment::All,
+                expires_at: None,
+                fields: vec![ServiceFieldInput {
+                    label: "Password".into(),
+                    value: "Shared-GitHub-44!".into(),
+                }],
+                totp_secret: None,
+            },
+        )
+        .unwrap();
+        let password = updated
+            .fields
+            .iter()
+            .find(|field| field.label == "Password")
+            .unwrap();
+        assert!(password.has_value);
+        assert_eq!(
+            reveal_field(&conn, &key, &password.id).unwrap().value,
+            "Shared-GitHub-44!"
+        );
+    }
+
+    #[test]
+    fn field_suggestions_are_project_scoped_and_can_reuse_secret_values() {
+        let (conn, key) = setup();
+        ensure_personal_project(&conn).unwrap();
+        let pid = create_project(
+            &conn,
+            &CreateProjectInput {
+                name: "Project".into(),
+                sub: "".into(),
+                color: "#5b9dff".into(),
+            },
+        )
+        .unwrap();
+        add_service(
+            &conn,
+            &key,
+            &AddServiceInput {
+                project_id: pid.clone(),
+                template_id: "login".into(),
+                label: "Primary".into(),
+                env: Environment::All,
+                expires_at: None,
+                fields: vec![
+                    ServiceFieldInput {
+                        label: "Email / Username".into(),
+                        value: "shared@example.com".into(),
+                    },
+                    ServiceFieldInput {
+                        label: "Password".into(),
+                        value: "Shared-Password-44!".into(),
+                    },
+                ],
+                totp_secret: None,
+            },
+        )
+        .unwrap();
+
+        let emails = list_field_suggestions(&conn, &key, &pid, "Account Email", "").unwrap();
+        assert_eq!(emails.len(), 1);
+        assert_eq!(emails[0].value, "shared@example.com");
+        assert!(!emails[0].secret);
+
+        let passwords = list_field_suggestions(&conn, &key, &pid, "Password", "").unwrap();
+        assert_eq!(passwords.len(), 1);
+        assert_eq!(passwords[0].value, "Shared-Password-44!");
+        assert!(passwords[0].secret);
+
+        let personal =
+            list_field_suggestions(&conn, &key, PERSONAL_PROJECT_ID, "Password", "").unwrap();
+        assert!(personal.is_empty());
     }
 }

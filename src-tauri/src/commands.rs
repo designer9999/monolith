@@ -274,6 +274,19 @@ pub fn list_templates() -> Vec<Template> {
     templates::catalog()
 }
 
+/// Reusable field values from the current project for add/edit form dropdowns.
+#[tauri::command]
+pub fn list_field_suggestions(
+    project_id: String,
+    field_label: String,
+    query: String,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<FieldSuggestion>> {
+    state.with_unlocked(|conn, key| {
+        repo::list_field_suggestions(conn, key, &project_id, &field_label, &query)
+    })
+}
+
 // --- mutations ---
 
 /// Create a project. Returns the created project view.

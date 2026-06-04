@@ -135,12 +135,14 @@ Field labels must match the selected template. Useful common mappings:
 - `apple`: `Account Email`, `Password`, `Recovery Email`, `Trusted Phone`, `Recovery Key`, `Backup Codes`
 - `mega`: `Account Email`, `Password`, `Recovery Key`, `Notes`
 - `topaz`: `Account Email`, `Password`, `License Key`, `Notes`
-- `huggingface`: `Username`, `Account Email`, `Access Token`, `Organization`
+- `huggingface`: `Username`, `Account Email`, `Password`, `Access Token`, `Organization`
 - `instagram`: `Username`, `Account Email`, `Password`, `Recovery Email`, `Phone`, `Backup Codes`
-- `github`: `Username`, `Account Email`, `Personal Access Token`, `SSH Private Key`, `Webhook Secret`, `OAuth Client ID`, `OAuth Secret`
+- `github`: `Username`, `Account Email`, `Password`, `Personal Access Token`, `SSH Private Key`, `Webhook Secret`, `OAuth Client ID`, `OAuth Secret`
 - `zeroid`: `Client ID`, `Client Secret`, `Issuer URL`, `Account Email`
 - `openai`: `API Key`, `Organization ID`, `Project ID`
-- `vercel`: `Account Email`, `Access Token`, `Team ID`, `Project ID`, `Deploy Hook URL`
+- `vercel`: `Account Email`, `Password`, `Access Token`, `Team ID`, `Project ID`, `Deploy Hook URL`
+- `cloudflare`: `Account Email`, `Password`, `API Token`, `Global API Key`, `Zone ID`, `Account ID`
+- `runpod`: `API Key`, `Endpoint ID`, `Account Email`, `Password`
 - `note`: `Note`
 
 Use `note` for credentials that do not fit a template yet. Put the whole private note in the `Note` field.

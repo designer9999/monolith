@@ -23,6 +23,7 @@ import type {
   AppPlatform,
   CompletePairingInput,
   CreateProjectInput,
+  FieldSuggestion,
   Item,
   PairedDevice,
   PasswordHistoryEntry,
@@ -69,6 +70,8 @@ export const listServices = (projectId: string) =>
 export const listItems = () => cmd<Item[]>("list_items");
 export const listActivity = () => cmd<Activity[]>("list_activity");
 export const listTemplates = () => cmd<Template[]>("list_templates");
+export const listFieldSuggestions = (projectId: string, fieldLabel: string, query: string) =>
+  cmd<FieldSuggestion[]>("list_field_suggestions", { projectId, fieldLabel, query });
 export const storageUsage = () => cmd<Storage>("storage_usage");
 export const appSettings = () => cmd<AppSettings>("app_settings");
 

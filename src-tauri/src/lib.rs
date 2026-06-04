@@ -62,6 +62,7 @@ pub fn run() {
             commands::list_items,
             commands::list_activity,
             commands::list_templates,
+            commands::list_field_suggestions,
             commands::create_project,
             commands::update_project,
             commands::set_project_icon,

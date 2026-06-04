@@ -116,6 +116,18 @@ export interface RevealedSecret {
   value: string;
 }
 
+export interface FieldSuggestion {
+  fieldId: string;
+  serviceId: string;
+  serviceTitle: string;
+  templateName: string;
+  fieldLabel: string;
+  fieldType: FieldType;
+  secret: boolean;
+  value: string;
+  updated: string;
+}
+
 export interface PasswordHistoryEntry {
   id: string;
   fieldId: string;
