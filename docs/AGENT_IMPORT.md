@@ -12,7 +12,7 @@ This is the intended workflow when another local AI agent is helping collect cre
 2. Go to `Settings -> Agent Import`.
 3. Press `Start bridge` for direct local automation, then copy the API prompt.
 4. Tell the agent which credential folders it may read.
-5. The agent should first call `GET /agent/capabilities`, then post a bundle to `POST /agent/import`.
+5. The agent should first call `GET /agent/capabilities`, then `GET /agent/projects`, ask which project should receive the import if the target is not already clear, and post a bundle to `POST /agent/import`.
 6. If the bridge is not used, ask the agent to write one `*.monolith-import.json` file and drop/select/paste it in MONOLITH.
 7. Delete any plaintext import file after import.
 
@@ -25,6 +25,7 @@ The Agent Bridge is a temporary localhost API exposed from `Settings -> Agent Im
 - It listens only on `127.0.0.1`.
 - It requires the temporary `X-MONOLITH-Agent-Token` shown in the copied API prompt.
 - It can return import capabilities and templates.
+- It can return a non-secret project list so agents can target imports by `projectId`.
 - It can import bundles.
 - It cannot reveal existing vault data or secret values.
 - It expires automatically.
@@ -39,12 +40,16 @@ Invoke-RestMethod "$base/agent/capabilities" -Headers @{
   "X-MONOLITH-Agent-Token" = $token
 }
 
+Invoke-RestMethod "$base/agent/projects" -Headers @{
+  "X-MONOLITH-Agent-Token" = $token
+}
+
 Invoke-RestMethod "$base/agent/import" -Method Post -ContentType "application/json" -Headers @{
   "X-MONOLITH-Agent-Token" = $token
 } -Body (Get-Content .\local.monolith-import.json -Raw)
 ```
 
-Agents should call `GET /agent/capabilities` before writing a bundle. The response contains the exact template IDs, field labels, schema, limits, and a copyable prompt.
+Agents should call `GET /agent/capabilities` before writing a bundle. The response contains the exact template IDs, field labels, schema, limits, and a copyable prompt. Agents should then call `GET /agent/projects`, show the user the available project names/ids, and use `defaultProjectId` or item-level `projectId` for the selected target. Use `Personal` only when the user explicitly wants global or personal credentials.
 
 ## Copyable Agent Prompt
 
@@ -57,13 +62,13 @@ Read only these local credential folders or files:
 - <paste credential folder path 1>
 - <paste credential folder path 2>
 
-Do not print, summarize, or expose secret values in chat. If MONOLITH Agent Bridge is active, first call GET /agent/capabilities and then POST the bundle to /agent/import. If the bridge is not active, produce one JSON file that matches docs/agent-import.schema.json. Use version 1.
+Do not print, summarize, or expose secret values in chat. If MONOLITH Agent Bridge is active, first call GET /agent/capabilities, then GET /agent/projects, then POST the bundle to /agent/import. If the bridge is not active, produce one JSON file that matches docs/agent-import.schema.json. Use version 1.
 
-Put global and personal accounts under defaultProjectName "Personal". Put project-specific credentials under projectName only when the file clearly names a project.
+Ask the user which MONOLITH project should receive the credentials unless they already gave a clear target. Use projectId/defaultProjectId when the project id is known; use Personal only for global or personal accounts.
 
 Use stable labels, because MONOLITH upserts by project + templateId + label. Re-running the same import should update existing services, not create duplicates.
 
-Use templateId values such as github, apple, mega, topaz, huggingface, instagram, login, zeroid, openai, vercel, supabase, postgres, ssh, card, domain, and note. Use note for anything that does not fit a template yet.
+Use templateId values such as github, google-account, google, apple, mega, topaz, huggingface, instagram, login, zeroid, openai, vercel, supabase, postgres, ssh, card, domain, and note. Use note for anything that does not fit a template yet.
 
 Use expiresAt only when a real expiration, renewal, or planned rotation date is present, formatted YYYY-MM-DD. Do not invent dates.
 
@@ -99,7 +104,7 @@ secret values.
 {
   "version": 1,
   "source": "local credential folders",
-  "defaultProjectName": "Personal",
+  "defaultProjectId": "p_personal",
   "items": [
     {
       "templateId": "github",
@@ -114,17 +119,19 @@ secret values.
 }
 ```
 
-`defaultProjectName` is optional. If no project is supplied, MONOLITH imports into `Personal`. If `projectName` is supplied and does not exist, MONOLITH creates that project. If `projectId` is supplied, it must already exist.
+`defaultProjectId` and `defaultProjectName` are optional. If no project is supplied, MONOLITH imports into `Personal`. If `projectName` is supplied and does not exist, MONOLITH creates that project, so bridge agents should prefer a `projectId` returned by `GET /agent/projects` and ask before creating a new project. If `projectId` is supplied, it must already exist.
 
 ## Template IDs
 
 Use these `templateId` values:
 
-`supabase`, `google`, `github`, `vercel`, `stripe`, `cloudflare`, `aws`, `openai`, `postgres`, `shopify`, `smtp`, `ssh`, `login`, `apple`, `mega`, `topaz`, `huggingface`, `instagram`, `domain`, `card`, `note`, `prisma`, `claude`, `resend`, `runpod`, `zeroid`.
+`supabase`, `google`, `google-account`, `github`, `vercel`, `stripe`, `cloudflare`, `aws`, `openai`, `postgres`, `shopify`, `smtp`, `ssh`, `login`, `apple`, `mega`, `topaz`, `huggingface`, `instagram`, `domain`, `card`, `note`, `bundle`, `prisma`, `claude`, `resend`, `runpod`, `zeroid`.
 
 Field labels must match the selected template. Useful common mappings:
 
 - `login`: `URL`, `Email / Username`, `Password`
+- `google-account`: `Account Email`, `Password`, `Recovery Email`, `Recovery Phone`, `App Password`, `Recovery Key`, `Backup Codes`, `Notes`
+- `google`: Google Cloud/OAuth/API credentials: `Client ID`, `Client Secret`, `API Key`, `Service Account JSON`, `Account Email`, `Account Password`
 - `apple`: `Account Email`, `Password`, `Recovery Email`, `Trusted Phone`, `Recovery Key`, `Backup Codes`
 - `mega`: `Account Email`, `Password`, `Recovery Key`, `Notes`
 - `topaz`: `Account Email`, `Password`, `License Key`, `Notes`
@@ -137,6 +144,10 @@ Field labels must match the selected template. Useful common mappings:
 - `note`: `Note`
 
 Use `note` for credentials that do not fit a template yet. Put the whole private note in the `Note` field.
+
+## TOTP Secrets
+
+For authenticator apps, put the shared secret in item-level `totpSecret`. MONOLITH accepts compact uppercase Base32 and user-facing spaced lowercase Base32, for example `vcxi 3kvp odgs f5xx hi7a dq7a 6wfr l2au`. Codes use the standard Google Authenticator convention: 6 digits, HMAC-SHA1, 30 second period.
 
 ## Upsert Rules
 

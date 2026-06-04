@@ -74,6 +74,7 @@
           "enum": [
             "supabase",
             "google",
+            "google-account",
             "github",
             "vercel",
             "stripe",

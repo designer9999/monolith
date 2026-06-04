@@ -299,6 +299,7 @@ export interface AgentImportResult {
 export interface AgentBridgeSession {
   baseUrl: string;
   capabilitiesUrl: string;
+  projectsUrl: string;
   importUrl: string;
   token: string;
   expiresAt: string;

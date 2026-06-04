@@ -20,7 +20,11 @@ pub const PERIOD: u64 = 30;
 /// added by the user are validated for base32 correctness here (a parse error is
 /// surfaced) but not rejected for length, matching how authenticator apps behave.
 fn build(secret_base32: &str) -> AppResult<TOTP> {
-    let bytes = Secret::Encoded(secret_base32.trim().to_string())
+    let secret = normalize_secret(secret_base32);
+    if secret.is_empty() {
+        return Err(AppError::Invalid("TOTP secret is required".into()));
+    }
+    let bytes = Secret::Encoded(secret)
         .to_bytes()
         .map_err(|_| AppError::Invalid("TOTP secret is not valid base32".into()))?;
     Ok(TOTP::new_unchecked(
@@ -30,6 +34,19 @@ fn build(secret_base32: &str) -> AppResult<TOTP> {
         PERIOD,
         bytes,
     ))
+}
+
+fn normalize_secret(secret_base32: &str) -> String {
+    secret_base32
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_whitespace() || ch == '-' {
+                None
+            } else {
+                Some(ch.to_ascii_uppercase())
+            }
+        })
+        .collect()
 }
 
 /// Validate that a string is a usable base32 TOTP secret.
@@ -65,5 +82,14 @@ mod tests {
     #[test]
     fn rejects_non_base32() {
         assert!(generate("not base32 !!!").is_err());
+    }
+
+    #[test]
+    fn accepts_spaced_lowercase_base32_secret() {
+        let compact = "VCXI3KVPODGSF5XXHI7ADQ7A6WFRL2AU";
+        let spaced = "vcxi 3kvp odgs f5xx hi7a dq7a 6wfr l2au";
+
+        assert_eq!(normalize_secret(spaced), compact);
+        validate_secret(spaced).unwrap();
     }
 }

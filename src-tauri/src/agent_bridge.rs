@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::agent_import;
+use crate::db::repo;
 use crate::error::{AppError, AppResult};
 use crate::models::{AgentBridgeSession, AgentImportBundle, AgentImportResult};
 use crate::pairing;
@@ -82,7 +83,20 @@ struct AgentBridgeCapabilities {
 struct AgentBridgeEndpoints {
     health: String,
     capabilities: String,
+    projects: String,
     import: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentBridgeProject {
+    id: String,
+    name: String,
+    sub: String,
+    personal: bool,
+    service_count: i64,
+    totp_count: i64,
+    updated: String,
 }
 
 #[derive(Serialize)]
@@ -260,7 +274,9 @@ fn handle_request(
                 "ok": true,
                 "name": "MONOLITH Agent Bridge",
                 "authRequired": true,
-                "capabilities": "/agent/capabilities"
+                "capabilities": "/agent/capabilities",
+                "projects": "/agent/projects",
+                "import": "/agent/import"
             }),
         )?;
         return Ok(());
@@ -279,6 +295,9 @@ fn handle_request(
         ("GET", "/agent/capabilities") => {
             let session = session_from_runtime(runtime)?;
             write_json(stream, 200, &capabilities(&session)?)?;
+        }
+        ("GET", "/agent/projects") => {
+            write_json(stream, 200, &list_agent_projects(inner)?)?;
         }
         ("POST", "/agent/import") => {
             let result = serde_json::from_slice::<AgentImportBundle>(&request.body)
@@ -310,6 +329,27 @@ fn import_bundle(
         .map_err(|_| AppError::Other("state mutex poisoned".into()))?;
     let key = guard.key.as_ref().ok_or(AppError::Locked)?;
     agent_import::import_bundle(&guard.conn, key, bundle)
+}
+
+fn list_agent_projects(inner: &Arc<Mutex<Inner>>) -> AppResult<Vec<AgentBridgeProject>> {
+    let guard = inner
+        .lock()
+        .map_err(|_| AppError::Other("state mutex poisoned".into()))?;
+    if guard.key.is_none() {
+        return Err(AppError::Locked);
+    }
+    Ok(repo::list_projects(&guard.conn)?
+        .into_iter()
+        .map(|project| AgentBridgeProject {
+            id: project.id,
+            name: project.name,
+            sub: project.sub,
+            personal: project.personal,
+            service_count: project.count,
+            totp_count: project.totp_count,
+            updated: project.updated,
+        })
+        .collect())
 }
 
 fn read_request(stream: &mut TcpStream) -> AppResult<HttpRequest> {
@@ -418,6 +458,7 @@ fn capabilities(session: &AgentBridgeSession) -> AppResult<AgentBridgeCapabiliti
         endpoints: AgentBridgeEndpoints {
             health: format!("{}/agent/health", session.base_url),
             capabilities: session.capabilities_url.clone(),
+            projects: session.projects_url.clone(),
             import: session.import_url.clone(),
         },
         authentication: AgentBridgeAuth {
@@ -437,7 +478,7 @@ fn capabilities(session: &AgentBridgeSession) -> AppResult<AgentBridgeCapabiliti
         example_bundle: json!({
             "version": 1,
             "source": "local credential folders",
-            "defaultProjectName": "Personal",
+            "defaultProjectId": "p_personal",
             "items": [
                 {
                     "templateId": "github",
@@ -493,13 +534,19 @@ Security rules:
 - Do not print, summarize, or expose secret values in chat.
 - Read only the credential paths the user explicitly allows.
 - First request MONOLITH capabilities so you know all accepted templates and exact field labels.
+- Then list MONOLITH projects and ask the user which target project should receive the credentials unless the user already gave a clear target.
 - Use stable labels because MONOLITH upserts by project + templateId + label.
-- Use defaultProjectName "Personal" for global/personal accounts.
+- Prefer projectId/defaultProjectId from the project list. Use Personal only when the user explicitly wants global or personal credentials.
+- Do not create a new project unless the user explicitly asks for one. If no listed project matches, ask before importing.
 - Use expiresAt only when a real expiration, renewal, or rotation date exists in YYYY-MM-DD format.
 - Import with POST /agent/import. Delete any plaintext temporary bundle after success.
 
 Capabilities:
 GET {capabilities_url}
+Header: X-MONOLITH-Agent-Token: {token}
+
+Projects:
+GET {projects_url}
 Header: X-MONOLITH-Agent-Token: {token}
 
 Import:
@@ -508,9 +555,10 @@ Header: X-MONOLITH-Agent-Token: {token}
 Content-Type: application/json
 
 Allowed bundle root shape:
-{{"version":1,"source":"...","defaultProjectName":"Personal","items":[...]}}
+{{"version":1,"source":"...","defaultProjectId":"<selected project id>","items":[...]}}
 "#,
         capabilities_url = session.capabilities_url,
+        projects_url = session.projects_url,
         import_url = session.import_url,
         token = token_line,
     )
@@ -520,6 +568,7 @@ fn session_from_runtime(runtime: &AgentBridgeRuntime) -> AppResult<AgentBridgeSe
     let base_url = format!("http://127.0.0.1:{}", runtime.port);
     Ok(AgentBridgeSession {
         capabilities_url: format!("{base_url}/agent/capabilities"),
+        projects_url: format!("{base_url}/agent/projects"),
         import_url: format!("{base_url}/agent/import"),
         base_url,
         token: runtime.token.clone(),
@@ -610,6 +659,7 @@ mod tests {
         AgentBridgeSession {
             base_url: "http://127.0.0.1:49152".to_string(),
             capabilities_url: "http://127.0.0.1:49152/agent/capabilities".to_string(),
+            projects_url: "http://127.0.0.1:49152/agent/projects".to_string(),
             import_url: "http://127.0.0.1:49152/agent/import".to_string(),
             token: "test-token".to_string(),
             expires_at: "2026-06-03T12:00:00Z".to_string(),
@@ -640,10 +690,15 @@ mod tests {
         let caps = capabilities(&test_session()).unwrap();
 
         assert_eq!(caps.endpoints.import, "http://127.0.0.1:49152/agent/import");
+        assert_eq!(
+            caps.endpoints.projects,
+            "http://127.0.0.1:49152/agent/projects"
+        );
         assert_eq!(caps.authentication.header, "X-MONOLITH-Agent-Token");
         assert!(caps
             .agent_prompt
             .contains("Do not print, summarize, or expose secret values"));
+        assert!(caps.agent_prompt.contains("/agent/projects"));
         assert!(!caps.agent_prompt.contains("test-token"));
     }
 }

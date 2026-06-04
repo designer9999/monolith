@@ -318,6 +318,7 @@ pub struct PairingImportResult {
 pub struct AgentBridgeSession {
     pub base_url: String,
     pub capabilities_url: String,
+    pub projects_url: String,
     pub import_url: String,
     pub token: String,
     pub expires_at: String,

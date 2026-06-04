@@ -201,7 +201,7 @@ Read only these local credential folders or files:
 
 Do not print, summarize, or expose secret values in chat. Produce one JSON file that matches docs/agent-import.schema.json. Use version 1.
 
-Put global and personal accounts under defaultProjectName "Personal". Put project-specific credentials under projectName only when the file clearly names a project.
+Ask the user which MONOLITH project should receive the credentials unless they already gave a clear target. Use projectId/defaultProjectId when the project id is known; use Personal only for global or personal accounts.
 
 Use stable labels, because MONOLITH upserts by project + templateId + label. Re-running the same import should update existing services, not create duplicates.
 
@@ -225,17 +225,22 @@ First fetch the live MONOLITH capabilities. They include the exact templates, fi
 GET ${bridge.capabilitiesUrl}
 Header: X-MONOLITH-Agent-Token: ${token}
 
+Then fetch the non-secret MONOLITH project list:
+GET ${bridge.projectsUrl}
+Header: X-MONOLITH-Agent-Token: ${token}
+
+Show the project names and ids to the user and ask which target should receive the credentials unless the user already gave a clear target. Prefer defaultProjectId or item.projectId from that list. Do not create a new project unless the user explicitly asks for one.
+
 Then POST a JSON bundle directly into MONOLITH:
 POST ${bridge.importUrl}
 Header: X-MONOLITH-Agent-Token: ${token}
 Content-Type: application/json
 
 Bundle root shape:
-{"version":1,"source":"local credential folders","defaultProjectName":"Personal","items":[...]}
+{"version":1,"source":"local credential folders","defaultProjectId":"<selected project id>","items":[...]}
 
 Rules:
-- Put global and personal accounts under defaultProjectName "Personal".
-- Put project-specific credentials under projectName only when a file clearly names a project.
+- Use Personal only for global/personal accounts or when the user chooses Personal.
 - Use stable labels because MONOLITH upserts by project + templateId + label.
 - Use expiresAt only for real expiration, renewal, or rotation dates in YYYY-MM-DD format.
 - Use note for anything that does not fit a template yet.
@@ -1007,7 +1012,7 @@ export function Settings({
                   <div>
                     <LblText className="text-acc">LOCAL AGENT BRIDGE</LblText>
                     <div className="mt-1 text-[11px] leading-[1.5] text-txt-4">
-                      Desktop loopback API. Agents can read capabilities and import bundles; they cannot read vault secrets.
+                      Desktop loopback API. Agents can read capabilities and project names, then import bundles; they cannot read vault secrets.
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1023,8 +1028,9 @@ export function Settings({
                     )}
                   </div>
                 </div>
-                <div className="grid gap-px bg-line sm:grid-cols-2">
+                <div className="grid gap-px bg-line sm:grid-cols-3">
                   <KV k="Capabilities" v={bridge ? bridge.capabilitiesUrl : "start bridge first"} />
+                  <KV k="Projects" v={bridge ? bridge.projectsUrl : "start bridge first"} />
                   <KV k="Import endpoint" v={bridge ? bridge.importUrl : "start bridge first"} />
                 </div>
                 <div className="mt-2 text-[10.5px] leading-[1.5] text-txt-4">
