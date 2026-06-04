@@ -102,14 +102,16 @@ pub fn clear(vault_id: &str) -> AppResult<()> {
         Err(err) => Err(err),
     };
     let file_result = delete_fallback(vault_id);
-    if file_result.is_ok() {
-        return Ok(());
+    match (keyring_result, file_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(file_err)) => Err(file_err),
+        (Err(keyring_err), Ok(())) => Err(keyring_err),
+        (Err(keyring_err), Err(file_err)) => Err(AppError::Other(format!(
+            "{keyring_err}; fallback clear also failed: {file_err}"
+        ))),
     }
-    keyring_result?;
-    file_result
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn delete_fallback(vault_id: &str) -> AppResult<()> {
     let path = fallback_path(vault_id, false)?;
     match std::fs::remove_file(path) {
@@ -122,8 +124,8 @@ fn delete_fallback(vault_id: &str) -> AppResult<()> {
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
-pub fn clear(_vault_id: &str) -> AppResult<()> {
-    Ok(())
+pub fn clear(vault_id: &str) -> AppResult<()> {
+    delete_fallback(vault_id)
 }
 
 fn expiry_label(auto_lock_ms: Option<i64>) -> AppResult<Option<String>> {
@@ -157,38 +159,38 @@ fn format_time(value: OffsetDateTime) -> AppResult<String> {
 fn load_raw(vault_id: &str) -> AppResult<Option<RememberedCredential>> {
     use keyring::Error as KeyringError;
 
-    let entry = match entry(vault_id) {
-        Ok(entry) => entry,
-        Err(keyring_err) => {
-            return match load_fallback(vault_id) {
-                Ok(Some(credential)) => Ok(Some(credential)),
-                Ok(None) => Err(keyring_err),
-                Err(fallback_err) => Err(AppError::Other(format!(
-                    "{keyring_err}; fallback also failed: {fallback_err}"
-                ))),
-            };
-        }
+    let keyring_credential = match entry(vault_id) {
+        Ok(entry) => match entry.get_password() {
+            Ok(value) => parse_credential(&value, "remembered unlock credential").map(Some),
+            Err(KeyringError::NoEntry) => Ok(None),
+            Err(err) => Err(keyring_error(err)),
+        },
+        Err(keyring_err) => Err(keyring_err),
     };
-    let value = match entry.get_password() {
-        Ok(value) => value,
-        Err(KeyringError::NoEntry) => return load_fallback(vault_id),
-        Err(err) => {
-            let keyring_err = keyring_error(err);
-            return match load_fallback(vault_id) {
-                Ok(Some(credential)) => Ok(Some(credential)),
-                Ok(None) => Err(keyring_err),
-                Err(fallback_err) => Err(AppError::Other(format!(
-                    "{keyring_err}; fallback also failed: {fallback_err}"
-                ))),
-            };
+    let fallback_credential = load_fallback(vault_id);
+
+    match (keyring_credential, fallback_credential) {
+        (Ok(keyring), Ok(fallback)) => Ok(newest_credential(keyring, fallback)),
+        (Ok(Some(credential)), Err(err)) => {
+            eprintln!("remembered unlock fallback unavailable: {err}");
+            Ok(Some(credential))
         }
-    };
-    serde_json::from_str(&value)
-        .map(Some)
-        .map_err(|_| AppError::Invalid("remembered unlock credential is invalid".into()))
+        (Ok(None), Err(err)) => Err(err),
+        (Err(err), Ok(Some(credential))) => {
+            eprintln!("remembered unlock keyring unavailable: {err}");
+            Ok(Some(credential))
+        }
+        (Err(err), Ok(None)) => Err(err),
+        (Err(keyring_err), Err(fallback_err)) => Err(AppError::Other(format!(
+            "{keyring_err}; fallback also failed: {fallback_err}"
+        ))),
+    }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn parse_credential(value: &str, label: &str) -> AppResult<RememberedCredential> {
+    serde_json::from_str(value).map_err(|_| AppError::Invalid(format!("{label} is invalid")))
+}
+
 fn load_fallback(vault_id: &str) -> AppResult<Option<RememberedCredential>> {
     let path = fallback_path(vault_id, false)?;
     let value = match std::fs::read_to_string(path) {
@@ -200,38 +202,47 @@ fn load_fallback(vault_id: &str) -> AppResult<Option<RememberedCredential>> {
             )))
         }
     };
-    serde_json::from_str(&value)
-        .map(Some)
-        .map_err(|_| AppError::Invalid("remembered unlock fallback is invalid".into()))
+    parse_credential(&value, "remembered unlock fallback").map(Some)
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
-fn load_raw(_vault_id: &str) -> AppResult<Option<RememberedCredential>> {
-    Ok(None)
+fn load_raw(vault_id: &str) -> AppResult<Option<RememberedCredential>> {
+    load_fallback(vault_id)
+}
+
+fn save_fallback(vault_id: &str, value: &str) -> AppResult<()> {
+    let path = fallback_path(vault_id, true)?;
+    std::fs::write(path, value)
+        .map_err(|err| AppError::Other(format!("could not save remembered unlock fallback: {err}")))
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn save_raw(vault_id: &str, credential: &RememberedCredential) -> AppResult<()> {
     let value = serde_json::to_string(credential)?;
-    match entry(vault_id).and_then(|entry| entry.set_password(&value).map_err(keyring_error)) {
-        Ok(()) => {
-            delete_fallback(vault_id).ok();
+    let fallback_result = save_fallback(vault_id, &value);
+    let keyring_result =
+        entry(vault_id).and_then(|entry| entry.set_password(&value).map_err(keyring_error));
+
+    match (keyring_result, fallback_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(fallback_err)) => {
+            eprintln!("remembered unlock fallback save failed: {fallback_err}");
             Ok(())
         }
-        Err(keyring_err) => {
-            let path = fallback_path(vault_id, true)?;
-            std::fs::write(path, value).map_err(|fallback_err| {
-                AppError::Other(format!(
-                    "{keyring_err}; fallback save also failed: {fallback_err}"
-                ))
-            })
+        (Err(keyring_err), Ok(())) => {
+            eprintln!("remembered unlock keyring save failed: {keyring_err}");
+            Ok(())
         }
+        (Err(keyring_err), Err(fallback_err)) => Err(AppError::Other(format!(
+            "{keyring_err}; fallback save also failed: {fallback_err}"
+        ))),
     }
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
-fn save_raw(_vault_id: &str, _credential: &RememberedCredential) -> AppResult<()> {
-    Ok(())
+fn save_raw(vault_id: &str, credential: &RememberedCredential) -> AppResult<()> {
+    let value = serde_json::to_string(credential)?;
+    save_fallback(vault_id, &value)
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -246,16 +257,31 @@ fn keyring_error(err: keyring::Error) -> AppError {
     ))
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(any(test, not(any(target_os = "android", target_os = "ios"))))]
+fn newest_credential(
+    left: Option<RememberedCredential>,
+    right: Option<RememberedCredential>,
+) -> Option<RememberedCredential> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            if credential_updated_at(&right) > credential_updated_at(&left) {
+                Some(right)
+            } else {
+                Some(left)
+            }
+        }
+        (Some(credential), None) | (None, Some(credential)) => Some(credential),
+        (None, None) => None,
+    }
+}
+
+#[cfg(any(test, not(any(target_os = "android", target_os = "ios"))))]
+fn credential_updated_at(credential: &RememberedCredential) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(&credential.updated_at, &Rfc3339).ok()
+}
+
 fn fallback_path(vault_id: &str, create_dir: bool) -> AppResult<std::path::PathBuf> {
-    let base = std::env::var_os("APPDATA")
-        .or_else(|| std::env::var_os("LOCALAPPDATA"))
-        .or_else(|| std::env::var_os("HOME"))
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| AppError::Other("could not locate app-data directory".into()))?;
-    let dir = base
-        .join("com.radionica.monolith")
-        .join("remembered-unlock");
+    let dir = fallback_base_dir()?.join("remembered-unlock");
     if create_dir {
         std::fs::create_dir_all(&dir)?;
     }
@@ -273,4 +299,69 @@ fn fallback_path(vault_id: &str, create_dir: bool) -> AppResult<std::path::PathB
             .take(96)
             .collect::<String>()
     )))
+}
+
+fn fallback_base_dir() -> AppResult<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("MONOLITH_APP_DATA_DIR") {
+        return Ok(std::path::PathBuf::from(path));
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        if let Some(path) = std::env::var_os("APPDATA").or_else(|| std::env::var_os("LOCALAPPDATA"))
+        {
+            return Ok(std::path::PathBuf::from(path).join("com.radionica.monolith"));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return Ok(std::path::PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("com.radionica.monolith"));
+        }
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return Ok(std::path::PathBuf::from(home).join("com.radionica.monolith"));
+        }
+    }
+
+    Err(AppError::Other(
+        "could not locate app-data directory".into(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credential(updated_at: &str, device_key: &str) -> RememberedCredential {
+        RememberedCredential {
+            version: CREDENTIAL_VERSION,
+            vault_id: "vault-test".to_string(),
+            device_key: device_key.to_string(),
+            expires_at: None,
+            updated_at: updated_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn newest_credential_prefers_latest_updated_at() {
+        let older = credential("2026-06-03T10:00:00Z", "older");
+        let newer = credential("2026-06-03T11:00:00Z", "newer");
+
+        let selected = newest_credential(Some(older), Some(newer)).unwrap();
+
+        assert_eq!(selected.device_key, "newer");
+    }
+
+    #[test]
+    fn newest_credential_keeps_existing_when_other_side_missing() {
+        let existing = credential("2026-06-03T10:00:00Z", "existing");
+
+        let selected = newest_credential(Some(existing), None).unwrap();
+
+        assert_eq!(selected.device_key, "existing");
+    }
 }

@@ -4,7 +4,7 @@
  * Ported 1:1 from the design's project.jsx; services + fields come from the vault.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 
 import {
   addAttachment,
@@ -19,7 +19,7 @@ import type { ProjectIcon as ProjectIconData } from "@/lib/types";
 import { Icon } from "@/lib/icons";
 import { fmtDate } from "@/lib/format";
 import { expirationInfo, isExpirationAttention } from "@/lib/expiration";
-import { ServiceMark, Strength, useCopy } from "@/lib/ui";
+import { ServiceMark, useCopy } from "@/lib/ui";
 import { Btn } from "@/components/ui/btn";
 import { Chip, Lbl, LblText, MiniStat } from "@/components/ui/primitives";
 import { ProjectIcon } from "./ProjectIcon";
@@ -44,6 +44,25 @@ function EnvChip({ env }: { env: Environment }) {
       {m.l}
     </Chip>
   );
+}
+
+function serviceSearchText(service: Service): string {
+  return [
+    service.title,
+    service.templateName,
+    service.templateId,
+    service.label,
+    service.env,
+    service.group,
+    service.expiresAt ?? "",
+    ...service.fields.flatMap((field) => [
+      field.label,
+      field.fieldType,
+      field.secret ? "" : field.value ?? "",
+    ]),
+  ]
+    .join(" ")
+    .toLowerCase();
 }
 
 export function ProjectView({
@@ -74,6 +93,7 @@ export function ProjectView({
   const [serviceError, setServiceError] = useState<string | null>(null);
   const [loadingServices, setLoadingServices] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     if (!editingService) return;
@@ -125,10 +145,13 @@ export function ProjectView({
     setFiles(project.files || []);
   }, [project.id, project.files]);
 
+  const filteredServices = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return services;
+    return services.filter((service) => serviceSearchText(service).includes(q));
+  }, [services, query]);
   const totp = services.filter((s) => s.totp).length;
-  const risk = services.filter(
-    (s) => isExpirationAttention(s.expiresAt) || s.exposed || s.reused || (s.strength != null && s.strength < 45),
-  ).length;
+  const risk = services.filter((s) => isExpirationAttention(s.expiresAt) || s.exposed || s.reused).length;
 
   const onEditService = async (service: Service, draft: ServiceDraft) => {
     try {
@@ -216,10 +239,26 @@ export function ProjectView({
             </Btn>
           </div>
         </div>
-        <div className="mt-5 grid grid-cols-3 gap-4 sm:flex sm:gap-7">
-          <MiniStat n={services.length} label="Services" />
-          <MiniStat n={totp} label="2FA enabled" tone={totp ? "accent" : null} />
-          <MiniStat n={risk} label="Attention" tone={risk ? "danger" : "ok"} />
+        <div className="mt-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="grid grid-cols-3 gap-4 sm:flex sm:gap-7">
+            <MiniStat n={services.length} label="Services" />
+            <MiniStat n={totp} label="2FA enabled" tone={totp ? "accent" : null} />
+            <MiniStat n={risk} label="Attention" tone={risk ? "danger" : "ok"} />
+          </div>
+          <div className="flex w-full items-center gap-[9px] border border-line-2 bg-bg px-3 py-[10px] lg:max-w-[540px]">
+            <Icon name="search" size={14} className="text-txt-3" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="SEARCH THIS PROJECT..."
+              className="min-w-0 flex-1 border-none bg-transparent font-mono text-[11px] uppercase tracking-[0.08em] text-txt outline-none placeholder:text-txt-4"
+            />
+            {query && (
+              <button type="button" onClick={() => setQuery("")} className="flex text-txt-3 hover:text-txt">
+                <Icon name="x" size={12} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -234,11 +273,21 @@ export function ProjectView({
             Loading services…
           </div>
         )}
-        {services.map((s) => (
+        {filteredServices.length === 0 && !loadingServices && (
+          <div className="bg-bg-1 px-4 py-10 text-center">
+            <div className="mx-auto mb-4 grid size-14 place-items-center border border-dashed border-line-2 text-txt-3">
+              <Icon name="search" size={22} />
+            </div>
+            <LblText className="text-txt-3">
+              {query.trim() ? `NO MATCH FOR "${query.trim().toUpperCase()}"` : "NO SERVICES YET"}
+            </LblText>
+          </div>
+        )}
+        {filteredServices.map((s) => (
           <ServicePanel
             key={s.id}
             service={s}
-            startOpen={services.length <= 4 || s.id === focusId}
+            startOpen={filteredServices.length <= 4 || s.id === focusId}
             highlight={s.id === focusId}
             onRemove={onRemoveService}
             onEdit={() => setEditingService(s)}
@@ -358,12 +407,23 @@ function ServicePanel({
   const [open, setOpen] = useState(startOpen);
   const [removing, setRemoving] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const [menuConfirmRemove, setMenuConfirmRemove] = useState(false);
+  const [menuError, setMenuError] = useState<string | null>(null);
   useEffect(() => {
     if (highlight) setOpen(true);
   }, [highlight]);
+  useEffect(() => {
+    if (!menuPos) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuPos(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menuPos]);
   const [copied, copy] = useCopy();
   const exp = expirationInfo(service.expiresAt);
-  const risky = exp.tone === "expired" || exp.tone === "soon" || service.exposed || service.reused || (service.strength != null && service.strength < 45);
+  const risky = exp.tone === "expired" || exp.tone === "soon" || service.exposed || service.reused;
   const urgent = service.exposed || exp.tone === "expired";
   const attentionText = service.exposed
     ? "Credential found in a known breach — rotate now."
@@ -373,12 +433,41 @@ function ServicePanel({
         ? "This credential is past its expiration date."
         : exp.tone === "soon"
           ? "This credential is approaching its expiration date."
-          : "Weak password — consider rotating.";
+          : "";
+
+  const openContextMenu = (event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const width = 226;
+    const height = 180;
+    setMenuPos({
+      x: Math.min(Math.max(8, event.clientX), window.innerWidth - width - 8),
+      y: Math.min(Math.max(8, event.clientY), window.innerHeight - height - 8),
+    });
+    setMenuConfirmRemove(false);
+    setMenuError(null);
+  };
+
+  const removeService = async () => {
+    try {
+      setRemoving(true);
+      setMenuError(null);
+      await onRemove(service.id);
+      setMenuPos(null);
+      setConfirmRemove(false);
+      setMenuConfirmRemove(false);
+    } catch (err) {
+      setMenuError((err as AppError)?.message ?? "Couldn't remove the service.");
+    } finally {
+      setRemoving(false);
+    }
+  };
 
   return (
     <div className={`bg-bg-1 ${highlight ? "shadow-[inset_0_0_0_1px_var(--accent-line)]" : ""}`}>
       <button
         onClick={() => setOpen((o) => !o)}
+        onContextMenu={openContextMenu}
         className="flex w-full cursor-pointer items-center gap-3 border-none bg-transparent px-4 py-[14px] text-left sm:gap-3.5 sm:px-[18px] sm:py-[15px]"
       >
         <ServiceMarkFromService service={service} />
@@ -408,7 +497,6 @@ function ServicePanel({
             {service.fields.length} FIELDS · UPDATED {fmtDate(service.updated)}
           </Lbl>
         </div>
-        {service.strength != null && <span className="hidden sm:inline-flex"><Strength value={service.strength} w={48} /></span>}
         <span className={`text-txt-3 transition-transform duration-150 ${open ? "rotate-180" : ""}`}>
           <Icon name="chevd" size={16} />
         </span>
@@ -468,17 +556,7 @@ function ServicePanel({
                 <Btn
                   variant="danger"
                   className="text-[10px]"
-                  onClick={() => {
-                    void (async () => {
-                      try {
-                        setRemoving(true);
-                        await onRemove(service.id);
-                      } finally {
-                        setRemoving(false);
-                        setConfirmRemove(false);
-                      }
-                    })();
-                  }}
+                  onClick={() => void removeService()}
                   disabled={removing}
                 >
                   <Icon name="x" size={12} /> {removing ? "Removing…" : "Confirm"}
@@ -496,7 +574,106 @@ function ServicePanel({
           </div>
         </div>
       )}
+      {menuPos && (
+        <div
+          className="fixed inset-0 z-[49]"
+          onMouseDown={() => setMenuPos(null)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setMenuPos(null);
+          }}
+        >
+          <div
+            className="animate-in fade-in fixed w-[226px] border border-line-2 bg-bg-1 p-2 shadow-[0_24px_60px_rgba(0,0,0,0.6)]"
+            style={{ left: menuPos.x, top: menuPos.y }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <Lbl className="px-2 py-1.5">{service.title}</Lbl>
+            {menuError && (
+              <div className="mx-2 mb-1.5 border border-danger bg-bg px-2 py-1.5 text-[10px] text-danger" role="alert">
+                {menuError}
+              </div>
+            )}
+            <ServiceMenuItem
+              icon="pencil"
+              label="Edit service"
+              disabled={removing}
+              onClick={() => {
+                setMenuPos(null);
+                onEdit();
+              }}
+            />
+            <ServiceMenuItem
+              icon={open ? "chevd" : "chev"}
+              label={open ? "Collapse" : "Expand"}
+              disabled={removing}
+              onClick={() => {
+                setOpen((current) => !current);
+                setMenuPos(null);
+              }}
+            />
+            {menuConfirmRemove ? (
+              <div className="mt-1 border-t border-line pt-1">
+                <ServiceMenuItem
+                  icon="trash"
+                  label={removing ? "Removing..." : "Confirm remove"}
+                  danger
+                  disabled={removing}
+                  onClick={() => void removeService()}
+                />
+                <ServiceMenuItem
+                  icon="x"
+                  label="Cancel"
+                  disabled={removing}
+                  onClick={() => setMenuConfirmRemove(false)}
+                />
+              </div>
+            ) : (
+              <div className="mt-1 border-t border-line pt-1">
+                <ServiceMenuItem
+                  icon="trash"
+                  label="Remove service"
+                  danger
+                  disabled={removing}
+                  onClick={() => setMenuConfirmRemove(true)}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function ServiceMenuItem({
+  icon,
+  label,
+  danger,
+  disabled,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 border border-transparent px-2 py-2 text-left font-mono text-[10px] uppercase tracking-[0.12em] transition-colors disabled:pointer-events-none disabled:opacity-50 ${
+        danger
+          ? "text-danger hover:border-danger hover:bg-danger/10"
+          : "text-txt-2 hover:border-line-2 hover:bg-bg-2 hover:text-txt"
+      }`}
+    >
+      <Icon name={icon} size={12} />
+      <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
+    </button>
   );
 }
 

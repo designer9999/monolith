@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use secrecy::SecretString;
-use tauri::State;
+use tauri::{AppHandle, State};
 use time::format_description::well_known::Rfc3339;
 
 use crate::agent_bridge;
@@ -28,8 +28,8 @@ pub fn vault_status(state: State<'_, AppState>) -> AppResult<VaultStatus> {
     state.with(|inner| {
         let initialized = crate::db::is_initialized(&inner.conn)?;
         let unlocked = inner.key.is_some();
-        let item_count = if unlocked {
-            repo::item_count(&inner.conn)?
+        let item_count = if initialized {
+            repo::item_count(&inner.conn).unwrap_or(0)
         } else {
             0
         };
@@ -164,14 +164,26 @@ pub fn restore_remembered_unlock(state: State<'_, AppState>) -> AppResult<VaultS
         let Some(vault_id) = repo::vault_id(&inner.conn)? else {
             return Err(AppError::VaultState("Vault id is missing".into()));
         };
-        let Some(device_key) = remembered_unlock::load_device_key(&vault_id).unwrap_or_default()
-        else {
-            return Ok(VaultStatus {
-                initialized: true,
-                unlocked: false,
-                item_count: 0,
-                vault_id: Some(vault_id),
-            });
+        let locked_item_count = repo::item_count(&inner.conn).unwrap_or(0);
+        let device_key = match remembered_unlock::load_device_key(&vault_id) {
+            Ok(Some(device_key)) => device_key,
+            Ok(None) => {
+                return Ok(VaultStatus {
+                    initialized: true,
+                    unlocked: false,
+                    item_count: locked_item_count,
+                    vault_id: Some(vault_id),
+                });
+            }
+            Err(err) => {
+                eprintln!("remembered unlock unavailable: {err}");
+                return Ok(VaultStatus {
+                    initialized: true,
+                    unlocked: false,
+                    item_count: locked_item_count,
+                    vault_id: Some(vault_id),
+                });
+            }
         };
         let vault_key = match repo::load_device_unlock(&inner.conn, &device_key) {
             Ok(Some(vault_key)) => vault_key,
@@ -180,7 +192,7 @@ pub fn restore_remembered_unlock(state: State<'_, AppState>) -> AppResult<VaultS
                 return Ok(VaultStatus {
                     initialized: true,
                     unlocked: false,
-                    item_count: 0,
+                    item_count: locked_item_count,
                     vault_id: Some(vault_id),
                 });
             }
@@ -198,16 +210,36 @@ pub fn restore_remembered_unlock(state: State<'_, AppState>) -> AppResult<VaultS
     })
 }
 
-/// Lock the vault: drop and zeroize the in-memory key.
+/// Lock the vault for this running process only. The remembered local unlock
+/// session remains valid, so auto-lock and app restart can restore it.
 #[tauri::command]
-pub fn lock_vault(state: State<'_, AppState>) -> AppResult<()> {
-    state.with(|inner| {
-        if let Some(vault_id) = repo::vault_id(&inner.conn)? {
-            remembered_unlock::clear(&vault_id).ok();
+pub fn lock_vault_memory(state: State<'_, AppState>) -> AppResult<()> {
+    agent_bridge::stop(&state.agent_bridge).ok();
+    let result = state.with(|inner| {
+        if let Some(key) = inner.key.as_ref() {
+            let settings = repo::app_settings(&inner.conn)?;
+            remember_unlock_session(&inner.conn, key, settings.auto_lock_ms)?;
         }
         inner.key = None; // VaultKey::drop zeroizes
         Ok(())
-    })
+    });
+    agent_bridge::stop(&state.agent_bridge).ok();
+    result
+}
+
+/// Manual lock: drop the in-memory key and forget the remembered local session.
+#[tauri::command]
+pub fn lock_vault(state: State<'_, AppState>) -> AppResult<()> {
+    agent_bridge::stop(&state.agent_bridge).ok();
+    let result = state.with(|inner| {
+        if let Some(vault_id) = repo::vault_id(&inner.conn)? {
+            remembered_unlock::clear(&vault_id)?;
+        }
+        inner.key = None; // VaultKey::drop zeroizes
+        Ok(())
+    });
+    agent_bridge::stop(&state.agent_bridge).ok();
+    result
 }
 
 // --- read views ---
@@ -346,9 +378,13 @@ pub fn import_agent_bundle_file(
 }
 
 #[tauri::command]
-pub fn start_agent_bridge(state: State<'_, AppState>) -> AppResult<AgentBridgeSession> {
-    state.with_unlocked(|_, _| Ok(()))?;
-    agent_bridge::start(Arc::clone(&state.agent_bridge), Arc::clone(&state.inner))
+pub fn start_agent_bridge(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<AgentBridgeSession> {
+    let store = Arc::clone(&state.agent_bridge);
+    let inner = Arc::clone(&state.inner);
+    state.with_unlocked(|_, _| agent_bridge::start(app, store, inner))
 }
 
 #[tauri::command]
@@ -518,6 +554,7 @@ pub fn complete_pairing(
     input: CompletePairingInput,
     state: State<'_, AppState>,
 ) -> AppResult<PairingImportResult> {
+    agent_bridge::stop(&state.agent_bridge).ok();
     let qr = pairing::parse_qr_payload(&input.qr_payload)?;
     let device_id = format!("dev_{}", uuid::Uuid::new_v4().simple());
     let device_name = if input.device_name.trim().is_empty() {
@@ -605,10 +642,7 @@ fn remember_unlock_session(
     key: &VaultKey,
     auto_lock_ms: Option<i64>,
 ) -> AppResult<()> {
-    if let Err(err) = remember_unlock_session_inner(conn, key, auto_lock_ms) {
-        eprintln!("remembered unlock unavailable: {err}");
-    }
-    Ok(())
+    remember_unlock_session_inner(conn, key, auto_lock_ms)
 }
 
 fn remember_unlock_session_inner(
@@ -618,9 +652,14 @@ fn remember_unlock_session_inner(
 ) -> AppResult<()> {
     let vault_id =
         repo::vault_id(conn)?.ok_or_else(|| AppError::VaultState("Vault id is missing".into()))?;
-    let device_key = match remembered_unlock::load_device_key(&vault_id)? {
-        Some(existing) => existing,
-        None => crypto::random_key()?,
+    let device_key = match remembered_unlock::load_device_key(&vault_id) {
+        Ok(Some(existing)) => existing,
+        Ok(None) => crypto::random_key()?,
+        Err(AppError::Other(err)) => {
+            eprintln!("remembered unlock credential read failed, replacing local session: {err}");
+            crypto::random_key()?
+        }
+        Err(err) => return Err(err),
     };
     repo::store_device_unlock(
         conn,

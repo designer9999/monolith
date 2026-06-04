@@ -1360,6 +1360,26 @@ pub fn list_items(conn: &Connection) -> AppResult<Vec<Item>> {
         let project_id = row.project_id.clone();
         let svc = build_service(conn, row)?;
         let title = svc.title.clone();
+        let mut tags = vec![
+            svc.group.clone(),
+            project_id.clone(),
+            project.name.clone(),
+            svc.template_id.clone(),
+            svc.template_name.clone(),
+            svc.label.clone(),
+            title.clone(),
+            env_str(svc.env).to_string(),
+        ];
+        for field in &svc.fields {
+            tags.push(field.label.clone());
+            tags.push(format!("{:?}", field.field_type));
+            if !field.secret {
+                if let Some(value) = field.value.as_deref() {
+                    tags.push(value.to_string());
+                }
+            }
+        }
+        tags.retain(|tag| !tag.trim().is_empty());
         items.push(Item {
             id: svc.id,
             project_id: project_id.clone(),
@@ -1385,7 +1405,7 @@ pub fn list_items(conn: &Connection) -> AppResult<Vec<Item>> {
             strength: svc.strength,
             reused: svc.reused,
             exposed: svc.exposed,
-            tags: vec![svc.group.to_lowercase(), project_id],
+            tags,
         });
     }
     Ok(items)
@@ -1590,14 +1610,33 @@ pub fn load_device_unlock(
 ) -> AppResult<Option<[u8; crypto::KEY_LEN]>> {
     let row = conn
         .query_row(
-            "SELECT device_key_nonce, encrypted_vault_key FROM device_unlocks WHERE id = 'local'",
+            "SELECT device_id, device_key_nonce, encrypted_vault_key FROM device_unlocks WHERE id = 'local'",
             [],
-            |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?)),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((nonce, wrapped)) = row else {
+    let Some((device_id, nonce, wrapped)) = row else {
         return Ok(None);
     };
+    if device_id != crate::remembered_unlock::LOCAL_DEVICE_ID {
+        let trusted = conn
+            .query_row(
+                "SELECT 1 FROM devices WHERE id = ?1 AND trusted = 1 AND revoked_at IS NULL",
+                params![device_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !trusted {
+            return Ok(None);
+        }
+    }
     Ok(Some(crypto::unwrap_vault_key(
         device_key, &nonce, &wrapped,
     )?))
@@ -1975,6 +2014,26 @@ mod tests {
             ),
             Err(AppError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn revoked_device_cannot_use_stored_unlock() {
+        let (conn, key) = setup();
+        let device_key = crypto::random_key().unwrap();
+
+        upsert_device(
+            &conn,
+            "dev_phone",
+            "Android phone",
+            "android",
+            &crate::pairing::encode(&crypto::random_key().unwrap()),
+        )
+        .unwrap();
+        store_device_unlock(&conn, "dev_phone", &device_key, key.expose()).unwrap();
+        assert!(load_device_unlock(&conn, &device_key).unwrap().is_some());
+
+        revoke_device(&conn, "dev_phone").unwrap();
+        assert!(load_device_unlock(&conn, &device_key).unwrap().is_none());
     }
 
     #[test]

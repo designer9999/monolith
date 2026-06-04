@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use std::thread;
@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::json;
+use tauri::{AppHandle, Emitter};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::agent_import;
@@ -29,7 +30,10 @@ use crate::vault::crypto;
 const BRIDGE_TTL_SECONDS: i64 = 30 * 60;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ACTIVE_CONNECTIONS: usize = 8;
 const READ_TIMEOUT_SECONDS: u64 = 6;
+const IMPORT_SCHEMA: &str = include_str!("../../docs/agent-import.schema.json");
+pub const AGENT_IMPORTED_EVENT: &str = "monolith://agent-imported";
 
 #[derive(Default)]
 pub struct AgentBridgeStore {
@@ -42,6 +46,12 @@ struct AgentBridgeRuntime {
     token: String,
     expires_at: OffsetDateTime,
     stop: Arc<AtomicBool>,
+    active_connections: Arc<AtomicUsize>,
+    app: AppHandle,
+}
+
+struct ActiveConnection {
+    count: Arc<AtomicUsize>,
 }
 
 #[derive(Debug)]
@@ -88,10 +98,12 @@ struct AgentBridgeAuth {
 struct AgentBridgeLimits {
     max_body_bytes: usize,
     max_items: usize,
+    max_active_connections: usize,
     expires_at: String,
 }
 
 pub fn start(
+    app: AppHandle,
     store: Arc<AgentBridgeStore>,
     inner: Arc<Mutex<Inner>>,
 ) -> AppResult<AgentBridgeSession> {
@@ -118,6 +130,8 @@ pub fn start(
         token,
         expires_at,
         stop: Arc::new(AtomicBool::new(false)),
+        active_connections: Arc::new(AtomicUsize::new(0)),
+        app,
     };
     let session = session_from_runtime(&runtime)?;
 
@@ -177,9 +191,22 @@ fn serve_bridge(
     while runtime.is_active() {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                let allowed = runtime
+                    .active_connections
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                        (active < MAX_ACTIVE_CONNECTIONS).then_some(active + 1)
+                    })
+                    .is_ok();
+                if !allowed {
+                    let _ = write_error(&mut stream, 429, "agent bridge is busy");
+                    continue;
+                }
                 let inner = Arc::clone(&inner);
                 let runtime = runtime.clone();
                 thread::spawn(move || {
+                    let _active = ActiveConnection {
+                        count: Arc::clone(&runtime.active_connections),
+                    };
                     let _ = handle_request(&mut stream, &inner, &runtime);
                 });
             }
@@ -254,12 +281,20 @@ fn handle_request(
             write_json(stream, 200, &capabilities(&session)?)?;
         }
         ("POST", "/agent/import") => {
-            let bundle: AgentImportBundle =
-                serde_json::from_slice(&request.body).map_err(|_| {
+            let result = serde_json::from_slice::<AgentImportBundle>(&request.body)
+                .map_err(|_| {
                     AppError::Invalid("request body must be a MONOLITH import JSON bundle".into())
-                })?;
-            let result = import_bundle(inner, &bundle)?;
-            write_json(stream, 200, &result)?;
+                })
+                .and_then(|bundle| import_bundle(inner, &bundle));
+            match result {
+                Ok(result) => {
+                    if result.created + result.updated > 0 {
+                        runtime.app.emit(AGENT_IMPORTED_EVENT, &result).ok();
+                    }
+                    write_json(stream, 200, &result)?;
+                }
+                Err(err) => write_app_error(stream, &err)?,
+            }
         }
         _ => write_error(stream, 404, "agent bridge endpoint not found")?,
     }
@@ -369,13 +404,8 @@ fn is_authorized(request: &HttpRequest, runtime: &AgentBridgeRuntime) -> bool {
                     .or_else(|| value.strip_prefix("bearer "))
             })
         });
-    let query_token = request
-        .path
-        .split_once('?')
-        .and_then(|(_, query)| parse_query(query).get("token").cloned());
     header_token
         .map(str::trim)
-        .or(query_token.as_deref())
         .is_some_and(|token| token == runtime.token)
 }
 
@@ -397,10 +427,11 @@ fn capabilities(session: &AgentBridgeSession) -> AppResult<AgentBridgeCapabiliti
         },
         limits: AgentBridgeLimits {
             max_body_bytes: MAX_BODY_BYTES,
-            max_items: 500,
+            max_items: agent_import::MAX_AGENT_IMPORT_ITEMS,
+            max_active_connections: MAX_ACTIVE_CONNECTIONS,
             expires_at: session.expires_at.clone(),
         },
-        import_schema: import_schema(),
+        import_schema: import_schema()?,
         supported_template_ids,
         templates,
         example_bundle: json!({
@@ -419,54 +450,42 @@ fn capabilities(session: &AgentBridgeSession) -> AppResult<AgentBridgeCapabiliti
                 }
             ]
         }),
-        agent_prompt: agent_prompt(session),
+        agent_prompt: agent_prompt(session, false),
     })
 }
 
-fn import_schema() -> serde_json::Value {
-    json!({
-        "type": "object",
-        "required": ["items"],
-        "properties": {
-            "version": { "const": 1 },
-            "source": { "type": "string" },
-            "defaultProjectId": { "type": "string" },
-            "defaultProjectName": { "type": "string" },
-            "items": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 500,
-                "items": {
-                    "type": "object",
-                    "required": ["templateId"],
-                    "properties": {
-                        "projectId": { "type": "string" },
-                        "projectName": { "type": "string" },
-                        "templateId": { "type": "string" },
-                        "label": { "type": "string" },
-                        "env": { "enum": ["production", "staging", "dev", "all"] },
-                        "expiresAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
-                        "totpSecret": { "type": "string" },
-                        "source": { "type": "string" },
-                        "fields": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "required": ["label", "value"],
-                                "properties": {
-                                    "label": { "type": "string" },
-                                    "value": { "type": "string" }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    })
+fn import_schema() -> AppResult<serde_json::Value> {
+    let mut schema: serde_json::Value = serde_json::from_str(IMPORT_SCHEMA)?;
+    if let Some(items) = schema
+        .pointer_mut("/properties/items")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        items.insert(
+            "maxItems".to_string(),
+            serde_json::Value::from(agent_import::MAX_AGENT_IMPORT_ITEMS),
+        );
+    }
+    if let Some(template_id) = schema
+        .pointer_mut("/$defs/item/properties/templateId")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        template_id.insert(
+            "enum".to_string(),
+            json!(templates::catalog()
+                .iter()
+                .map(|template| template.id)
+                .collect::<Vec<_>>()),
+        );
+    }
+    Ok(schema)
 }
 
-fn agent_prompt(session: &AgentBridgeSession) -> String {
+fn agent_prompt(session: &AgentBridgeSession, include_token: bool) -> String {
+    let token_line = if include_token {
+        session.token.as_str()
+    } else {
+        "<token from MONOLITH Settings>"
+    };
     format!(
         r#"You are importing credentials into MONOLITH through its local agent bridge.
 
@@ -493,7 +512,7 @@ Allowed bundle root shape:
 "#,
         capabilities_url = session.capabilities_url,
         import_url = session.import_url,
-        token = session.token,
+        token = token_line,
     )
 }
 
@@ -517,24 +536,17 @@ impl AgentBridgeRuntime {
     }
 }
 
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 fn path_without_query(path: &str) -> String {
     path.split_once('?')
         .map(|(path, _)| path)
         .unwrap_or(path)
         .to_string()
-}
-
-fn parse_query(query: &str) -> HashMap<String, String> {
-    query
-        .split('&')
-        .filter_map(|pair| {
-            let (key, value) = pair.split_once('=')?;
-            Some((
-                key.to_string(),
-                urlencoding::decode(value).ok()?.into_owned(),
-            ))
-        })
-        .collect()
 }
 
 fn write_json<T: Serialize>(stream: &mut TcpStream, status: u16, body: &T) -> AppResult<()> {
@@ -544,6 +556,18 @@ fn write_json<T: Serialize>(stream: &mut TcpStream, status: u16, body: &T) -> Ap
 
 fn write_error(stream: &mut TcpStream, status: u16, message: &str) -> AppResult<()> {
     write_json(stream, status, &json!({ "error": message }))
+}
+
+fn write_app_error(stream: &mut TcpStream, err: &AppError) -> AppResult<()> {
+    let status = match err {
+        AppError::Locked => 423,
+        AppError::BadPassword => 401,
+        AppError::VaultState(_) => 409,
+        AppError::NotFound(_) => 404,
+        AppError::Invalid(_) => 400,
+        AppError::Crypto(_) | AppError::Db(_) | AppError::Other(_) => 500,
+    };
+    write_json(stream, status, &json!({ "error": err.to_string() }))
 }
 
 fn write_empty(stream: &mut TcpStream, status: u16) -> AppResult<()> {
@@ -562,14 +586,64 @@ fn write_response(
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        409 => "Conflict",
         410 => "Gone",
+        423 => "Locked",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
         _ => "Error",
     };
     let response = format!(
-        "HTTP/1.1 {status} {label}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: null\r\nAccess-Control-Allow-Headers: Content-Type, X-MONOLITH-Agent-Token, Authorization\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {label}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream
         .write_all(response.as_bytes())
         .map_err(|e| AppError::Other(format!("agent bridge response write failed: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_session() -> AgentBridgeSession {
+        AgentBridgeSession {
+            base_url: "http://127.0.0.1:49152".to_string(),
+            capabilities_url: "http://127.0.0.1:49152/agent/capabilities".to_string(),
+            import_url: "http://127.0.0.1:49152/agent/import".to_string(),
+            token: "test-token".to_string(),
+            expires_at: "2026-06-03T12:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn import_schema_uses_runtime_limits_and_template_catalog() {
+        let schema = import_schema().unwrap();
+        let max_items = schema
+            .pointer("/properties/items/maxItems")
+            .and_then(serde_json::Value::as_u64);
+        assert_eq!(max_items, Some(agent_import::MAX_AGENT_IMPORT_ITEMS as u64));
+
+        let enum_values = schema
+            .pointer("/$defs/item/properties/templateId/enum")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        let template_ids = templates::catalog()
+            .into_iter()
+            .map(|template| serde_json::Value::String(template.id.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(enum_values, &template_ids);
+    }
+
+    #[test]
+    fn capabilities_exposes_import_endpoint_and_write_only_prompt() {
+        let caps = capabilities(&test_session()).unwrap();
+
+        assert_eq!(caps.endpoints.import, "http://127.0.0.1:49152/agent/import");
+        assert_eq!(caps.authentication.header, "X-MONOLITH-Agent-Token");
+        assert!(caps
+            .agent_prompt
+            .contains("Do not print, summarize, or expose secret values"));
+        assert!(!caps.agent_prompt.contains("test-token"));
+    }
 }

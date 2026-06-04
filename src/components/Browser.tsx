@@ -10,11 +10,11 @@ import { useMemo, useState } from "react";
 import type { Item } from "@/lib/types";
 import { Icon } from "@/lib/icons";
 import { expirationInfo, isExpirationAttention } from "@/lib/expiration";
-import { ServiceMark, Strength, type MarkLike } from "@/lib/ui";
+import { ServiceMark, type MarkLike } from "@/lib/ui";
 import { fmtDate, rel } from "@/lib/format";
 import { Chip, LblText } from "@/components/ui/primitives";
 
-type SortKey = "updated" | "name" | "project" | "strength";
+type SortKey = "updated" | "name" | "project";
 type Tab = "all" | "totp" | "risk";
 type Mode = "grid" | "list";
 
@@ -22,14 +22,13 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "updated", label: "Updated" },
   { key: "name", label: "A–Z" },
   { key: "project", label: "Project" },
-  { key: "strength", label: "Strength" },
 ];
 
 function mk(item: Item): MarkLike {
   return { mono: item.mono, color: item.color, slug: item.slug, icon: item.icon };
 }
 
-const isRisk = (i: Item) => isExpirationAttention(i.expiresAt) || i.exposed || i.reused || (i.strength != null && i.strength < 45);
+const isRisk = (i: Item) => isExpirationAttention(i.expiresAt) || i.exposed || i.reused;
 
 export interface BrowserProps {
   items: Item[];
@@ -59,7 +58,6 @@ export function Browser({ items, onOpen }: BrowserProps) {
       if (sort === "name") return a.title.localeCompare(b.title);
       if (sort === "project")
         return a.projectName.localeCompare(b.projectName) || a.title.localeCompare(b.title);
-      if (sort === "strength") return (b.strength ?? -1) - (a.strength ?? -1);
       return new Date(b.updated).getTime() - new Date(a.updated).getTime();
     });
     return r;
@@ -236,13 +234,9 @@ function Card({ item, onOpen }: { item: Item; onOpen: (item: Item) => void }) {
 
       <div className="flex items-center justify-between gap-2">
         <LblText className="text-txt-4">{rel(item.updated)} AGO</LblText>
-        {item.strength != null ? (
-          <Strength value={item.strength} w={44} />
-        ) : (
-          <span className="font-mono text-[10px] tabular-nums text-txt-3">
-            {item.fieldCount} FLD
-          </span>
-        )}
+        <span className="font-mono text-[10px] tabular-nums text-txt-3">
+          {item.fieldCount} FLD
+        </span>
       </div>
     </button>
   );
@@ -251,7 +245,7 @@ function Card({ item, onOpen }: { item: Item; onOpen: (item: Item) => void }) {
 function ListHeader() {
   return (
     <div className="sticky top-0 z-[2] grid grid-cols-[42px_1fr_150px_80px_90px_80px] gap-3.5 border-b border-line-2 bg-bg-1 px-[22px] py-2.5">
-      {["", "SERVICE", "PROJECT", "STRENGTH", "UPDATED", "2FA"].map((h, i) => (
+      {["", "SERVICE", "PROJECT", "FIELDS", "UPDATED", "2FA"].map((h, i) => (
         <LblText key={i} className="text-txt-4">
           {h}
         </LblText>
@@ -294,13 +288,7 @@ function Row({ item, onOpen }: { item: Item; onOpen: (item: Item) => void }) {
           {item.projectName}
         </LblText>
       </span>
-      <span>
-        {item.strength != null ? (
-          <Strength value={item.strength} w={56} />
-        ) : (
-          <span className="text-[10px] text-txt-3">—</span>
-        )}
-      </span>
+      <span className="font-mono text-[10px] tabular-nums text-txt-3">{item.fieldCount} FLD</span>
       <span className="font-mono text-[11px] tabular-nums text-txt-2">{fmtDate(item.updated)}</span>
       <span>
         {item.totp ? (

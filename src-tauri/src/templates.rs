@@ -420,6 +420,22 @@ pub fn catalog() -> Vec<Template> {
             fields: vec![F::new("Note", true).area()],
         },
         Template {
+            id: "bundle",
+            name: "Credential Bundle",
+            mono: "CB",
+            slug: None,
+            icon: Some("layers"),
+            color: "#c8ff2e",
+            totp: false,
+            group: "Personal",
+            fields: vec![
+                // Searchable table of contents for imported clusters. Values here
+                // are intentionally non-secret labels/usernames, not passwords.
+                F::new("Index", false).area(),
+                F::new("Entries", true).danger().area(),
+            ],
+        },
+        Template {
             id: "prisma",
             name: "Prisma",
             mono: "Pr",

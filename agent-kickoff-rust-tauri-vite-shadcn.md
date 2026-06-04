@@ -18,7 +18,7 @@ You are starting a new desktop/webview app stack using:
 - React + TypeScript unless the project says otherwise.
 - shadcn/ui for copy-in UI components.
 - Tailwind CSS latest as required by shadcn/ui setup v4.3.
-- pnpm as the default JavaScript package manager unless the project already uses another one.
+- npm as the default JavaScript package manager unless the project already uses another one.
 
 Your first job is **not** to immediately scaffold code.
 
@@ -95,7 +95,7 @@ Check:
 Search examples:
 
 ```txt
-Vite latest getting started React TypeScript pnpm official docs
+Vite latest getting started React TypeScript npm official docs
 Vite latest Node version requirement config server hmr official docs
 ```
 
@@ -177,7 +177,7 @@ Use:
 pwd
 uname -a
 node --version
-pnpm --version
+npm --version
 rustc --version
 cargo --version
 ```
@@ -196,11 +196,11 @@ Avoid heavy builds under `/mnt/c/...` unless the user intentionally keeps repos 
 
 Tauri launches a native desktop window. In WSL this can be tricky depending on WSLg, Windows WebView2, GPU/display setup, and whether the Tauri CLI expects Windows-native dependencies.
 
-Before assuming `pnpm tauri dev` will work inside WSL, verify the latest Tauri docs for Windows + WSL. If unclear, separate workflows:
+Before assuming `npm run tauri -- dev` will work inside WSL, verify the latest Tauri docs for Windows + WSL. If unclear, separate workflows:
 
 ```txt
 Frontend dev in WSL:
-  pnpm dev
+  npm run dev
 
 Rust checks in WSL:
   cd src-tauri && cargo check && cargo test
@@ -232,7 +232,7 @@ Then choose the current recommended options for:
 ```txt
 language: TypeScript
 frontend framework: React
-package manager: pnpm
+package manager: npm
 ```
 
 Do not assume old prompt names are still correct. Follow the latest creator prompts.
@@ -244,9 +244,9 @@ Use this when the frontend layout needs custom control or the official Tauri cre
 Generic command pattern:
 
 ```bash
-pnpm create vite@latest <project-name> --template react-ts
+npm create vite@latest <project-name> -- --template react-ts
 cd <project-name>
-pnpm install
+npm install
 # add/init Tauri using current official command
 # add/init shadcn/ui using current official command
 ```
@@ -375,16 +375,16 @@ After scaffold or changes, run the commands that match the current package manag
 Likely commands:
 
 ```bash
-pnpm install
-pnpm build
-pnpm dev
+npm install
+npm run build
+npm run dev
 ````
 
 For Tauri:
 
 ```bash
-pnpm tauri dev
-pnpm tauri build
+npm run tauri -- dev
+npm run tauri -- build
 ```
 
 For Rust:

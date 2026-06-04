@@ -235,11 +235,11 @@ export function FieldRow({
                     void saveEdit();
                   }
                 }}
-                rows={Math.max(1, Math.min(4, draft.split("\n").length))}
+                rows={Math.max(6, Math.min(18, draft.split("\n").length))}
                 disabled={saving}
                 spellCheck={false}
                 aria-label={`Edit ${field.label}`}
-                className="block max-h-16 min-h-[1.45em] w-full resize-none overflow-y-auto border-none bg-transparent p-0 font-mono text-[13px] leading-[1.45] tracking-normal text-txt outline-none disabled:opacity-60"
+                className="block max-h-[28rem] min-h-[9rem] w-full resize-y overflow-y-auto border border-line-2 bg-bg px-3 py-2 font-mono text-[13px] leading-[1.5] tracking-normal text-txt outline-none focus:border-acc disabled:opacity-60"
               />
             ) : (
               <input
@@ -267,18 +267,7 @@ export function FieldRow({
           </div>
         ) : (
           <div className="group/field flex min-w-0 items-center gap-2">
-            <div
-              className={cn(
-                "min-w-0 overflow-hidden font-mono text-[13px] leading-[1.45] text-ellipsis",
-                empty ? "text-txt-4" : visible ? "text-txt" : "text-txt-2",
-                visible && !empty ? "tracking-normal" : "tracking-[0.12em]",
-                field.area && visible
-                  ? "max-h-16 overflow-y-auto whitespace-pre-wrap"
-                  : "overflow-y-hidden whitespace-nowrap",
-              )}
-            >
-              {display}
-            </div>
+            <FieldDisplay value={display} area={field.area} empty={empty} visible={visible} />
             {onSave && (
               <button
                 type="button"
@@ -301,6 +290,59 @@ export function FieldRow({
         )}
         <CopyBtnAsync onCopy={onCopy} active={copied === `f${idx}`} disabled={empty} />
       </div>
+    </div>
+  );
+}
+
+function FieldDisplay({
+  value,
+  area,
+  empty,
+  visible,
+}: {
+  value: string;
+  area: boolean;
+  empty: boolean;
+  visible: boolean;
+}) {
+  const base = cn(
+    "min-w-0 overflow-hidden font-mono text-[13px] leading-[1.45] text-ellipsis",
+    empty ? "text-txt-4" : visible ? "text-txt" : "text-txt-2",
+    visible && !empty ? "tracking-normal" : "tracking-[0.12em]",
+  );
+
+  if (!area || !visible || empty) {
+    return <div className={cn(base, "overflow-y-hidden whitespace-nowrap")}>{value}</div>;
+  }
+
+  const blocks = value
+    .split(/\n\s*-{3,}\s*\n/g)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  if (blocks.length <= 1) {
+    return (
+      <pre
+        className={cn(
+          base,
+          "max-h-[32rem] whitespace-pre-wrap break-words border-l border-line-2 pl-3 pr-2 font-mono overflow-y-auto select-text",
+        )}
+      >
+        {value}
+      </pre>
+    );
+  }
+
+  return (
+    <div className={cn(base, "max-h-[32rem] space-y-3 overflow-y-auto pr-2 select-text")}>
+      {blocks.map((block, index) => (
+        <pre
+          key={`${index}-${block.slice(0, 24)}`}
+          className="whitespace-pre-wrap break-words border-l border-line-2 bg-bg/40 px-3 py-2 font-mono text-[13px] leading-[1.5]"
+        >
+          {block}
+        </pre>
+      ))}
     </div>
   );
 }

@@ -42,6 +42,7 @@ pub fn run() {
             // The encrypted vault lives in the OS app-data directory.
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            std::env::set_var("MONOLITH_APP_DATA_DIR", &dir);
             let db_path = dir.join("monolith.vault.db");
 
             let app_state = AppState::new(&db_path)?;
@@ -54,6 +55,7 @@ pub fn run() {
             commands::create_vault,
             commands::unlock_vault,
             commands::restore_remembered_unlock,
+            commands::lock_vault_memory,
             commands::lock_vault,
             commands::list_projects,
             commands::list_services,

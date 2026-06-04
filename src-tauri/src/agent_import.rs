@@ -10,7 +10,7 @@ use crate::models::*;
 use crate::templates::{self, Template};
 use crate::vault::VaultKey;
 
-const MAX_AGENT_IMPORT_ITEMS: usize = 500;
+pub const MAX_AGENT_IMPORT_ITEMS: usize = 500;
 
 enum AgentImportAction {
     Created,

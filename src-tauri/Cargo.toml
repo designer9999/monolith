@@ -1,6 +1,6 @@
 [package]
 name = "monolith"
-version = "0.1.7"
+version = "0.1.10"
 description = "MONOLITH - a local-first credential & secrets vault"
 authors = ["you"]
 edition = "2021"

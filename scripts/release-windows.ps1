@@ -3,7 +3,8 @@ param(
   [string]$Repo,
   [string]$Notes = "MONOLITH release",
   [switch]$Publish,
-  [switch]$SkipChecks
+  [switch]$SkipChecks,
+  [switch]$AllowDirty
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,6 +90,17 @@ try {
   if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
     throw "Version must be SemVer, for example 0.1.1. Got: $Version"
   }
+  $packageVersion = (Get-Content (Join-Path $Root "package.json") -Raw | ConvertFrom-Json).version
+  if ($Version -ne $packageVersion) {
+    throw "Release version $Version does not match package.json version $packageVersion. Run npm run release:set-version -- $Version first."
+  }
+  if (!$AllowDirty) {
+    $dirty = (& git status --porcelain --untracked-files=no)
+    if ($LASTEXITCODE -ne 0) { throw "git status failed with exit code $LASTEXITCODE" }
+    if ($dirty) {
+      throw "Working tree has tracked changes. Commit or stash before building a release, or pass -AllowDirty for a local-only test build."
+    }
+  }
 
   $keyPath = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", "Process")
   if ($keyPath -and !(Test-Path $keyPath)) {
@@ -109,11 +121,17 @@ try {
   if (!(Test-Path $tauriCli)) {
     throw "Missing local Tauri CLI at $tauriCli. Run npm install first."
   }
+  $nsisDir = Join-Path $Root "src-tauri\target\release\bundle\nsis"
+  if (Test-Path $nsisDir) {
+    Get-ChildItem $nsisDir -Filter "*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
+    Get-ChildItem $nsisDir -Filter "*.sig" -ErrorAction SilentlyContinue | Remove-Item -Force
+  }
   Invoke-External $tauriCli @("build", "--bundles", "nsis", "--ci")
 
-  $nsisDir = Join-Path $Root "src-tauri\target\release\bundle\nsis"
-  $installer = Get-ChildItem $nsisDir -Filter "*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-  if (!$installer) { throw "No NSIS installer was produced in $nsisDir" }
+  $installer = Get-ChildItem $nsisDir -Filter "MONOLITH_${Version}_*setup.exe" |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if (!$installer) { throw "No NSIS installer for version $Version was produced in $nsisDir" }
   $signaturePath = "$($installer.FullName).sig"
   if (!(Test-Path $signaturePath)) { throw "Missing updater signature: $signaturePath" }
 

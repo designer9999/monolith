@@ -46,16 +46,11 @@ export function Home({
   const personal = projects.find((p) => p.personal);
   const regularProjects = projects.filter((p) => !p.personal);
 
-  const scored = items.filter((i) => i.strength != null);
-  const strong = scored.filter((i) => (i.strength ?? 0) >= 75).length;
-  const fair = scored.filter((i) => (i.strength ?? 0) >= 45 && (i.strength ?? 0) < 75).length;
-  const weak = scored.filter((i) => (i.strength ?? 0) < 45).length;
-  const noPass = items.length - scored.length;
-  const health = scored.length
-    ? Math.round(scored.reduce((a, b) => a + (b.strength ?? 0), 0) / scored.length)
-    : null;
   const codes = items.filter((i) => i.totp);
-  const risk = items.filter((i) => isExpirationAttention(i.expiresAt) || i.exposed || i.reused || (i.strength != null && i.strength < 45));
+  const expiring = items.filter((i) => isExpirationAttention(i.expiresAt));
+  const exposed = items.filter((i) => i.exposed);
+  const reused = items.filter((i) => i.reused);
+  const risk = items.filter((i) => isExpirationAttention(i.expiresAt) || i.exposed || i.reused);
 
   const hr = new Date().getHours();
   const greet = hr < 5 ? "LATE NIGHT" : hr < 12 ? "GOOD MORNING" : hr < 18 ? "GOOD AFTERNOON" : "GOOD EVENING";
@@ -66,7 +61,7 @@ export function Home({
     edit: "var(--txt-2)",
     warn: "var(--danger)",
   };
-  const hc = health == null ? "var(--txt-3)" : health >= 75 ? "var(--ok)" : health >= 50 ? "var(--warn)" : "var(--danger)";
+  const hc = exposed.length ? "var(--danger)" : risk.length ? "var(--warn)" : "var(--ok)";
 
   const onDrop = (idx: number) => {
     if (drag == null || drag === idx) {
@@ -83,11 +78,12 @@ export function Home({
   };
 
   const total = Math.max(items.length, 1);
+  const clear = Math.max(items.length - risk.length, 0);
   const dist: [string, number, string][] = [
-    ["var(--ok)", strong, "STRONG"],
-    ["var(--warn)", fair, "FAIR"],
-    ["var(--danger)", weak, "WEAK"],
-    ["var(--line-3)", noPass, "NO PWD"],
+    ["var(--ok)", clear, "CLEAR"],
+    ["var(--warn)", expiring.length, "EXPIRING"],
+    ["var(--danger)", exposed.length + reused.length, "ACTION"],
+    ["var(--line-3)", codes.length, "2FA"],
   ];
 
   return (
@@ -111,20 +107,19 @@ export function Home({
         {/* hero: health + live 2FA */}
         <div className="grid grid-cols-1 gap-px bg-line lg:grid-cols-[340px_1fr]">
           <div className="bg-bg-1 px-[22px] py-5">
-            <SectionHead icon="shield" title="Vault health" right={`${items.length} SECRETS`} />
+            <SectionHead icon="shield" title="Vault overview" right={`${items.length} SECRETS`} />
             <div className="mb-[18px] flex items-end gap-4">
               <div
                 className="font-display tabular-nums text-[60px] font-bold leading-[0.8]"
                 style={{ color: hc }}
               >
-                {health == null ? "--" : health}
-                <span className="text-[22px]">%</span>
+                {String(items.length).padStart(2, "0")}
               </div>
               <div className="pb-1.5">
                 <Lbl style={{ color: hc }}>
-                  {health == null ? "NO PASSWORDS" : health >= 75 ? "STRONG" : health >= 50 ? "FAIR" : "AT RISK"}
+                  {risk.length ? "ATTENTION" : "SEALED"}
                 </Lbl>
-                <Lbl className="mt-[5px] text-txt-4">{risk.length} NEED ATTENTION</Lbl>
+                <Lbl className="mt-[5px] text-txt-4">{risk.length} EXPIRING / EXPOSED / REUSED</Lbl>
               </div>
             </div>
             <div className="mb-3 flex h-2.5 border border-line-2 bg-bg">
@@ -251,9 +246,7 @@ export function Home({
                       ? "REUSED"
                       : expirationInfo(it.expiresAt).tone === "expired"
                         ? "EXPIRED"
-                        : expirationInfo(it.expiresAt).tone === "soon"
-                          ? "EXPIRING"
-                          : "WEAK"}
+                        : "EXPIRING"}
                 </Chip>
               </button>
             ))}

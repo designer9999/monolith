@@ -4,6 +4,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import {
   addService,
@@ -17,6 +18,7 @@ import {
   listItems,
   listProjects,
   lockVault,
+  lockVaultMemory,
   reorderProjects,
   restoreRememberedUnlock,
   scanPairingQr,
@@ -169,22 +171,32 @@ export default function App() {
     setPhase("ready");
   };
 
-  const onLock = useCallback(async () => {
+  const lockUi = useCallback(async (forgetTrustedSession: boolean) => {
     try {
       setActionError(null);
       const countBeforeLock = items.length || lockedCount;
-      await lockVault();
+      if (forgetTrustedSession) {
+        await lockVault();
+      } else {
+        await lockVaultMemory();
+      }
       setLockedCount(countBeforeLock);
       setProjects([]);
       setItems([]);
       setActivity([]);
       setActiveProject(null);
+      setCatalogProject(null);
+      setFocusId(null);
+      setModal(null);
       setView("home");
       setPhase("locked");
     } catch (err) {
       setActionError((err as AppError)?.message ?? "Couldn't lock the vault.");
     }
   }, [items.length, lockedCount]);
+
+  const onLock = useCallback(() => lockUi(true), [lockUi]);
+  const onAutoLock = useCallback(() => lockUi(false), [lockUi]);
 
   useEffect(() => {
     const autoLockMs = settings.autoLockMs;
@@ -194,7 +206,7 @@ export default function App() {
     const resetTimer = () => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        void onLock();
+        void onAutoLock();
       }, autoLockMs);
     };
     const events = ["pointerdown", "keydown", "touchstart", "mousemove", "focus"] as const;
@@ -204,7 +216,35 @@ export default function App() {
       window.clearTimeout(timer);
       events.forEach((event) => window.removeEventListener(event, resetTimer));
     };
-  }, [phase, settings.autoLockMs, onLock]);
+  }, [phase, settings.autoLockMs, onAutoLock]);
+
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let dispose: (() => void) | undefined;
+    let active = true;
+    void listen("monolith://agent-imported", () => {
+      void (async () => {
+        try {
+          await refresh();
+          setReloadKey((k) => k + 1);
+        } catch (err) {
+          setActionError((err as AppError)?.message ?? "Imported data, but couldn't refresh the UI.");
+        }
+      })();
+    })
+      .then((unlisten) => {
+        if (active) {
+          dispose = unlisten;
+        } else {
+          unlisten();
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [phase, refresh]);
 
   useEffect(() => {
     if (phase !== "ready") {
@@ -264,12 +304,19 @@ export default function App() {
       const catalog = next.catalogProjectId
         ? projects.find((p) => p.id === next.catalogProjectId) ?? null
         : null;
+      const nextView = next.view === "project" ? (project ? "project" : "home") : next.view ?? "home";
+      const nextModal =
+        next.modal === "editProject" && !project
+          ? null
+          : next.modal === "catalog" && next.catalogProjectId && !catalog
+            ? null
+            : next.modal ?? null;
 
       setActiveProject(project);
       setCatalogProject(catalog);
-      setFocusId(next.focusId ?? null);
-      setModal(next.modal ?? null);
-      setView(project && next.view === "project" ? "project" : next.view ?? "home");
+      setFocusId(project ? next.focusId ?? null : null);
+      setModal(nextModal);
+      setView(nextView);
     };
     const onPopState = (event: PopStateEvent) => restore(event.state);
     window.addEventListener("popstate", onPopState);

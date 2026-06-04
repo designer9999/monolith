@@ -6,6 +6,8 @@
   "platforms": ["iOS", "android"],
   "permissions": [
     "core:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-clear",
     "barcode-scanner:allow-scan",
     "barcode-scanner:allow-cancel",
     "barcode-scanner:allow-check-permissions",

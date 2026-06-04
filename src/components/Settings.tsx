@@ -21,6 +21,7 @@ import type {
   PairingSession,
   Project,
   Storage,
+  Template,
   UpdateAppSettingsInput,
 } from "@/lib/types";
 import {
@@ -28,10 +29,12 @@ import {
   agentBridgeStatus,
   cancelPairingSession,
   checkInstallAndRelaunch,
+  copyWithAutoClear,
   copyText,
   importAgentBundle,
   importAgentBundleFile,
   listDevices,
+  listTemplates,
   pairingSessionStatus,
   revokeDevice,
   startAgentBridge,
@@ -68,20 +71,27 @@ function SettingRow({
   label,
   desc,
   danger,
+  wide = false,
   children,
 }: {
   label: string;
   desc?: string;
   danger?: boolean;
+  wide?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-start justify-between gap-3 border-b border-line py-[15px] sm:flex-row sm:items-center sm:gap-6">
+    <div
+      className={cn(
+        "flex flex-col items-start justify-between gap-3 border-b border-line py-[15px]",
+        wide ? "sm:items-stretch" : "sm:flex-row sm:items-center sm:gap-6",
+      )}
+    >
       <div className="min-w-0">
         <div className={cn("mb-1 text-[12.5px]", danger ? "text-danger" : "text-txt")}>{label}</div>
         {desc && <div className="text-[11px] leading-[1.5] text-txt-3">{desc}</div>}
       </div>
-      <div className="w-full flex-none sm:w-auto">{children}</div>
+      <div className={cn("w-full flex-none", wide ? "min-w-0" : "sm:w-auto")}>{children}</div>
     </div>
   );
 }
@@ -121,9 +131,9 @@ function Segmented({
 /** Key / value cell on a hairline-gap grid. */
 function KV({ k, v }: { k: string; v: string }) {
   return (
-    <div className="bg-bg-1 px-[14px] py-3">
+    <div className="min-w-0 bg-bg-1 px-[14px] py-3">
       <Lbl className="mb-1.5 text-txt-4">{k}</Lbl>
-      <div className="font-mono text-[11.5px] text-txt">{v}</div>
+      <div className="break-all font-mono text-[11.5px] text-txt">{v}</div>
     </div>
   );
 }
@@ -169,26 +179,21 @@ function updateProgressText(progress: AppUpdateProgress | null): string {
 
 const MAX_IMPORT_FILE_BYTES = 8 * 1024 * 1024;
 
-const AGENT_TEMPLATE_GUIDE = `Supported templateId values and useful field labels:
-- github: Username, Account Email, Personal Access Token, SSH Private Key, Webhook Secret, OAuth Client ID, OAuth Secret
-- apple: Account Email, Password, Recovery Email, Trusted Phone, Recovery Key, Backup Codes
-- mega: Account Email, Password, Recovery Key, Notes
-- topaz: Account Email, Password, License Key, Notes
-- huggingface: Username, Account Email, Access Token, Organization
-- instagram: Username, Account Email, Password, Recovery Email, Phone, Backup Codes
-- login: URL, Email / Username, Password
-- zeroid: Client ID, Client Secret, Issuer URL, Account Email
-- openai: API Key, Organization ID, Project ID
-- vercel: Account Email, Access Token, Team ID, Project ID, Deploy Hook URL
-- supabase: Project URL, Anon Key, Service Role Key, JWT Secret, Database Password, S3 Access Key, S3 Secret Key
-- postgres: Host, Port, User, Password, Database, Connection URL
-- ssh: Host, User, Private Key, Passphrase
-- domain: Registrar, Login Email, Password, EPP / Auth Code, Renewal Date
-- card: Card Number, Expiry, CVV, Cardholder
-- note: Note
-- also available: google, stripe, cloudflare, aws, shopify, smtp, prisma, claude, resend, runpod`;
+function templateGuide(templates: Template[]): string {
+  if (!templates.length) {
+    return "Fetch MONOLITH capabilities or use docs/agent-import.schema.json for supported templateId values and field labels.";
+  }
+  return [
+    "Supported templateId values and field labels:",
+    ...templates.map((template) => {
+      const labels = template.fields.map((field) => field.label).join(", ");
+      return `- ${template.id}: ${labels}`;
+    }),
+  ].join("\n");
+}
 
-const AGENT_IMPORT_PROMPT = `You are preparing a MONOLITH agent import bundle.
+function buildFileAgentPrompt(guide: string): string {
+  return `You are preparing a MONOLITH agent import bundle.
 
 Read only these local credential folders or files:
 - <paste credential folder path 1>
@@ -200,27 +205,29 @@ Put global and personal accounts under defaultProjectName "Personal". Put projec
 
 Use stable labels, because MONOLITH upserts by project + templateId + label. Re-running the same import should update existing services, not create duplicates.
 
-${AGENT_TEMPLATE_GUIDE}
+${guide}
 
 Use note for anything that does not fit a template yet.
 
 Use expiresAt only when a real expiration, renewal, or planned rotation date is present, formatted YYYY-MM-DD. Do not invent dates.
 
 Save the result as monolith-import.monolith-import.json. Do not commit the file. After import, delete the plaintext bundle.`;
+}
 
-function buildAgentPrompt(bridge: AgentBridgeSession | null): string {
-  if (!bridge) return AGENT_IMPORT_PROMPT;
+function buildAgentPrompt(bridge: AgentBridgeSession | null, guide: string, includeToken: boolean): string {
+  if (!bridge) return buildFileAgentPrompt(guide);
+  const token = includeToken ? bridge.token : "<temporary token copied by MONOLITH>";
   return `You are importing credentials into MONOLITH through its local agent bridge.
 
 Read only the credential folders or files the user explicitly names. Do not print, summarize, or expose secret values in chat.
 
 First fetch the live MONOLITH capabilities. They include the exact templates, field labels, JSON schema, size limits, and an example bundle:
 GET ${bridge.capabilitiesUrl}
-Header: X-MONOLITH-Agent-Token: ${bridge.token}
+Header: X-MONOLITH-Agent-Token: ${token}
 
 Then POST a JSON bundle directly into MONOLITH:
 POST ${bridge.importUrl}
-Header: X-MONOLITH-Agent-Token: ${bridge.token}
+Header: X-MONOLITH-Agent-Token: ${token}
 Content-Type: application/json
 
 Bundle root shape:
@@ -234,7 +241,7 @@ Rules:
 - Use note for anything that does not fit a template yet.
 - Never invent missing secret values.
 
-${AGENT_TEMPLATE_GUIDE}
+${guide}
 
 This bridge is loopback-only, write-only, and expires at ${bridge.expiresAt}.`;
 }
@@ -285,12 +292,16 @@ export function Settings({
   const [bridge, setBridge] = useState<AgentBridgeSession | null>(null);
   const [bridgeBusy, setBridgeBusy] = useState(false);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const autoApprovingRef = useRef(false);
   const importFileRef = useRef<HTMLInputElement>(null);
   const isMobile = platform === "android" || platform === "ios";
+  const canUseBridge = !isMobile;
   const autolock = autoLockLabel(settings.autoLockMs);
   const clip = clipboardLabel(settings.clipboardClearMs);
-  const agentPrompt = buildAgentPrompt(bridge);
+  const guide = templateGuide(templates);
+  const displayedAgentPrompt = buildAgentPrompt(bridge, guide, false);
+  const copyAgentPromptText = buildAgentPrompt(bridge, guide, true);
 
   const counts: Record<string, number> = {};
   items.forEach((i) => {
@@ -338,21 +349,34 @@ export function Settings({
     }
   };
 
+  const refreshTemplates = async () => {
+    try {
+      setTemplates(await listTemplates());
+    } catch {
+      setTemplates([]);
+    }
+  };
+
   useEffect(() => {
     void refreshDevices();
     void refreshBridge();
+    void refreshTemplates();
   }, []);
 
   useEffect(() => {
     if (!bridge) return;
     const timer = window.setInterval(() => {
       void refreshBridge();
-    }, 15_000);
+    }, 5_000);
     return () => window.clearInterval(timer);
   }, [bridge]);
 
+  useEffect(() => {
+    setImportPromptCopied(false);
+  }, [bridge?.token]);
+
   const startBridge = async () => {
-    if (bridgeBusy) return;
+    if (bridgeBusy || !canUseBridge) return;
     setBridgeBusy(true);
     setBridgeError(null);
     try {
@@ -522,7 +546,11 @@ export function Settings({
   const finishAgentImport = async (result: AgentImportResult) => {
     setImportResult(result);
     if (result.created + result.updated > 0) {
-      await onDataImported();
+      try {
+        await onDataImported();
+      } catch (err) {
+        setImportError((err as AppError)?.message ?? "Imported data, but couldn't refresh the UI.");
+      }
     }
   };
 
@@ -614,7 +642,11 @@ export function Settings({
 
   const copyAgentPrompt = async () => {
     try {
-      await copyText(agentPrompt);
+      if (bridge) {
+        await copyWithAutoClear(copyAgentPromptText);
+      } else {
+        await copyText(copyAgentPromptText);
+      }
       setImportPromptCopied(true);
       window.setTimeout(() => setImportPromptCopied(false), 1400);
     } catch (err) {
@@ -684,7 +716,7 @@ export function Settings({
           </SettingRow>
           <SettingRow
             label="Auto-lock session"
-            desc="Lock after inactivity and expire the remembered local unlock session. Never keeps this Windows login trusted until you lock manually."
+            desc="Lock the running app after inactivity. Your remembered local unlock stays trusted until it expires or you lock manually; Never keeps this Windows login trusted until manual lock."
           >
             <div className="flex items-center gap-2.5">
               <Segmented
@@ -838,103 +870,127 @@ export function Settings({
               </div>
             </SettingRow>
           )}
-          <div className="grid grid-cols-1 items-start gap-4 border border-line bg-bg-1 p-4 sm:grid-cols-[auto_1fr] sm:gap-6 sm:p-[18px]">
-            <div className="text-center">
-              <div className="mx-auto grid size-[156px] place-items-center border border-line-2 bg-bg p-3">
-                {pairing ? (
-                  <QRCodeSVG
-                    value={pairing.qrPayload}
-                    size={128}
-                    bgColor="transparent"
-                    fgColor="currentColor"
-                    className="text-txt"
-                  />
-                ) : (
-                  <Icon name="qr" size={52} />
-                )}
+          {!isMobile ? (
+            <div className="grid grid-cols-1 items-start gap-4 border border-line bg-bg-1 p-4 sm:grid-cols-[auto_1fr] sm:gap-6 sm:p-[18px]">
+              <div className="text-center">
+                <div className="mx-auto grid size-[156px] place-items-center border border-line-2 bg-bg p-3">
+                  {pairing ? (
+                    <QRCodeSVG
+                      value={pairing.qrPayload}
+                      size={128}
+                      bgColor="transparent"
+                      fgColor="currentColor"
+                      className="text-txt"
+                    />
+                  ) : (
+                    <Icon name="qr" size={52} />
+                  )}
+                </div>
+                <Lbl className="mt-2.5 text-txt-4">
+                  {pairing ? `CODE ${pairing.code}` : "NO ACTIVE QR"}
+                </Lbl>
               </div>
-              <Lbl className="mt-2.5 text-txt-4">
-                {pairing ? `CODE ${pairing.code}` : "NO ACTIVE QR"}
-              </Lbl>
+              <div>
+                <div className="font-display mb-1.5 text-[15px] font-semibold">Pair an Android phone</div>
+                <p className="mb-3.5 text-[12px] leading-[1.6] text-txt-3">
+                  The phone scans this QR and connects over your local network. The visible QR is
+                  the local authorization, so the encrypted vault transfer starts automatically.
+                </p>
+                {pairingError && (
+                  <div className="mb-3 border border-danger bg-bg px-3 py-2 text-[11px] text-danger">
+                    {pairingError}
+                  </div>
+                )}
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  {!pairing ? (
+                    <Btn onClick={startPairing} disabled={pairingBusy}>
+                      <Icon name="qr" size={13} /> {pairingBusy ? "Starting..." : "Pair Android phone"}
+                    </Btn>
+                  ) : (
+                    <>
+                      <Btn
+                        onClick={approvePairing}
+                        disabled={pairingBusy || !pairing.pendingDeviceName || pairing.approved}
+                        className="max-w-full"
+                        title={pairing.pendingDeviceName ?? undefined}
+                      >
+                        <Icon name="check" size={13} />
+                        {pairing.pendingDeviceName ? "Auto approving phone" : "Waiting for phone"}
+                      </Btn>
+                      <Btn variant="ghost" onClick={cancelPairing} disabled={pairingBusy}>
+                        <Icon name="x" size={13} /> Cancel
+                      </Btn>
+                    </>
+                  )}
+                  {pairing && (
+                    <Chip tone={pairing.approved ? "accent" : pairing.pendingDeviceName ? "warn" : "default"}>
+                      {pairing.approved
+                        ? "APPROVED"
+                        : pairing.pendingDeviceName
+                          ? "PHONE WAITING"
+                          : "SCAN QR"}
+                    </Chip>
+                  )}
+                </div>
+                <div className="flex flex-col gap-px border border-line bg-line">
+                  {phases.map(([n, t, s]) => (
+                    <div key={n} className="flex items-center gap-[11px] bg-bg-1 px-3 py-[9px]">
+                      <span className="tabular-nums text-[10px] text-txt-4">{n}</span>
+                      <span className="flex-1 text-[12px] text-txt-2">{t}</span>
+                      <LblText className={s === "READY" ? "text-ok" : "text-txt-4"}>{s}</LblText>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 border border-line bg-line">
+                  {(devices.length ? devices : []).map((device) => (
+                    <div key={device.id} className="flex flex-wrap items-center gap-3 bg-bg-1 px-3 py-[10px]">
+                      <Icon name="shield" size={13} />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[12px] text-txt">{device.name}</div>
+                        <Lbl className={device.trusted ? "text-ok" : "text-txt-4"}>
+                          {device.trusted ? "TRUSTED" : "REVOKED"} · {device.platform}
+                        </Lbl>
+                      </div>
+                      {device.trusted ? (
+                        <Btn variant="ghost" onClick={() => void revoke(device.id)}>
+                          <Icon name="x" size={12} /> Revoke
+                        </Btn>
+                      ) : (
+                        <Chip tone="default">REVOKED</Chip>
+                      )}
+                    </div>
+                  ))}
+                  {!devices.length && (
+                    <div className="bg-bg-1 px-3 py-[10px] text-[11px] text-txt-4">
+                      No paired devices yet.
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
-            <div>
-              <div className="font-display mb-1.5 text-[15px] font-semibold">Pair an Android phone</div>
-              <p className="mb-3.5 text-[12px] leading-[1.6] text-txt-3">
-                The phone scans this QR and connects over your local network. The visible QR is
-                the local authorization, so the encrypted vault transfer starts automatically.
-              </p>
-              {pairingError && (
-                <div className="mb-3 border border-danger bg-bg px-3 py-2 text-[11px] text-danger">
-                  {pairingError}
+          ) : (
+            <div className="border border-line bg-line">
+              {(devices.length ? devices : []).map((device) => (
+                <div key={device.id} className="flex flex-wrap items-center gap-3 bg-bg-1 px-3 py-[10px]">
+                  <Icon name="shield" size={13} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[12px] text-txt">{device.name}</div>
+                    <Lbl className={device.trusted ? "text-ok" : "text-txt-4"}>
+                      {device.trusted ? "TRUSTED" : "REVOKED"} · {device.platform}
+                    </Lbl>
+                  </div>
+                  <Chip tone={device.trusted ? "accent" : "default"}>
+                    {device.trusted ? "SYNC DEVICE" : "REVOKED"}
+                  </Chip>
+                </div>
+              ))}
+              {!devices.length && (
+                <div className="bg-bg-1 px-3 py-[10px] text-[11px] text-txt-4">
+                  Scan a desktop QR to pair this phone.
                 </div>
               )}
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                {!pairing ? (
-                  <Btn onClick={startPairing} disabled={pairingBusy}>
-                    <Icon name="qr" size={13} /> {pairingBusy ? "Starting..." : "Pair Android phone"}
-                  </Btn>
-                ) : (
-                  <>
-                    <Btn
-                      onClick={approvePairing}
-                      disabled={pairingBusy || !pairing.pendingDeviceName || pairing.approved}
-                    >
-                      <Icon name="check" size={13} />
-                      {pairing.pendingDeviceName
-                        ? `Auto approving ${pairing.pendingDeviceName}`
-                        : "Waiting for phone"}
-                    </Btn>
-                    <Btn variant="ghost" onClick={cancelPairing} disabled={pairingBusy}>
-                      <Icon name="x" size={13} /> Cancel
-                    </Btn>
-                  </>
-                )}
-                {pairing && (
-                  <Chip tone={pairing.approved ? "accent" : pairing.pendingDeviceName ? "warn" : "default"}>
-                    {pairing.approved
-                      ? "APPROVED"
-                      : pairing.pendingDeviceName
-                        ? "PHONE WAITING"
-                        : "SCAN QR"}
-                  </Chip>
-                )}
-              </div>
-              <div className="flex flex-col gap-px border border-line bg-line">
-                {phases.map(([n, t, s]) => (
-                  <div key={n} className="flex items-center gap-[11px] bg-bg-1 px-3 py-[9px]">
-                    <span className="tabular-nums text-[10px] text-txt-4">{n}</span>
-                    <span className="flex-1 text-[12px] text-txt-2">{t}</span>
-                    <LblText className={s === "READY" ? "text-ok" : "text-txt-4"}>{s}</LblText>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 border border-line bg-line">
-                {(devices.length ? devices : []).map((device) => (
-                  <div key={device.id} className="flex flex-wrap items-center gap-3 bg-bg-1 px-3 py-[10px]">
-                    <Icon name="shield" size={13} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[12px] text-txt">{device.name}</div>
-                      <Lbl className={device.trusted ? "text-ok" : "text-txt-4"}>
-                        {device.trusted ? "TRUSTED" : "REVOKED"} · {device.platform}
-                      </Lbl>
-                    </div>
-                    {device.trusted ? (
-                      <Btn variant="ghost" onClick={() => void revoke(device.id)}>
-                        <Icon name="x" size={12} /> Revoke
-                      </Btn>
-                    ) : (
-                      <Chip tone="default">REVOKED</Chip>
-                    )}
-                  </div>
-                ))}
-                {!devices.length && (
-                  <div className="bg-bg-1 px-3 py-[10px] text-[11px] text-txt-4">
-                    No paired devices yet.
-                  </div>
-                )}
-              </div>
             </div>
-          </div>
+          )}
         </section>
 
         {/* AGENT IMPORT */}
@@ -943,25 +999,26 @@ export function Settings({
           <SettingRow
             label="Import agent bundle"
             desc="Ask an agent to generate a MONOLITH JSON bundle, then paste, select, or drop it here while the vault is unlocked. Values are encrypted immediately; this screen only shows counts and redacted errors."
+            wide
           >
             <div className="flex flex-col gap-2">
-              <div className="border border-line-2 bg-bg-1 px-3 py-3 sm:w-[680px]">
+              <div className="w-full max-w-[760px] border border-line-2 bg-bg-1 px-3 py-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <LblText className="text-acc">LOCAL AGENT BRIDGE</LblText>
                     <div className="mt-1 text-[11px] leading-[1.5] text-txt-4">
-                      Temporary loopback API. Agents can read capabilities and import bundles; they cannot read vault secrets.
+                      Desktop loopback API. Agents can read capabilities and import bundles; they cannot read vault secrets.
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Chip tone={bridge ? "accent" : "default"}>{bridge ? "ACTIVE" : "OFF"}</Chip>
+                    <Chip tone={bridge ? "accent" : "default"}>{bridge ? "ACTIVE" : canUseBridge ? "OFF" : "DESKTOP"}</Chip>
                     {bridge ? (
                       <Btn variant="ghost" onClick={() => void stopBridge()} disabled={bridgeBusy}>
                         <Icon name="x" size={13} /> Stop
                       </Btn>
                     ) : (
-                      <Btn onClick={() => void startBridge()} disabled={bridgeBusy}>
-                        <Icon name="terminal" size={13} /> {bridgeBusy ? "Starting..." : "Start bridge"}
+                      <Btn onClick={() => void startBridge()} disabled={bridgeBusy || !canUseBridge}>
+                        <Icon name="terminal" size={13} /> {bridgeBusy ? "Starting..." : canUseBridge ? "Start bridge" : "Desktop only"}
                       </Btn>
                     )}
                   </div>
@@ -971,11 +1028,11 @@ export function Settings({
                   <KV k="Import endpoint" v={bridge ? bridge.importUrl : "start bridge first"} />
                 </div>
                 <div className="mt-2 text-[10.5px] leading-[1.5] text-txt-4">
-                  Header: <span className="text-txt-2">X-MONOLITH-Agent-Token</span>. The copied prompt includes the temporary token.
+                  Header: <span className="text-txt-2">X-MONOLITH-Agent-Token</span>. The copied API prompt includes the temporary token and auto-clears from the clipboard.
                 </div>
                 {bridgeError && <div className="mt-2 text-[11px] text-danger">{bridgeError}</div>}
               </div>
-              <div className="border border-line-2 bg-bg-1">
+              <div className="w-full max-w-[760px] border border-line-2 bg-bg-1">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
                   <LblText className="text-acc">AI AGENT HANDOFF</LblText>
                   <Btn variant="ghost" onClick={() => void copyAgentPrompt()}>
@@ -985,9 +1042,9 @@ export function Settings({
                 </div>
                 <textarea
                   readOnly
-                  value={agentPrompt}
+                  value={displayedAgentPrompt}
                   spellCheck={false}
-                  className="h-[250px] w-full resize-none border-0 bg-bg px-3 py-2 font-mono text-[10.5px] leading-[1.55] text-txt-3 outline-none sm:w-[680px]"
+                  className="h-[250px] w-full resize-none border-0 bg-bg px-3 py-2 font-mono text-[10.5px] leading-[1.55] text-txt-3 outline-none"
                 />
               </div>
               <input
@@ -1009,7 +1066,7 @@ export function Settings({
                 onDragLeave={() => setImportDropActive(false)}
                 onDrop={(event) => void onImportDrop(event)}
                 className={cn(
-                  "flex flex-col gap-2 border border-dashed px-3 py-3 transition-colors sm:w-[680px]",
+                  "flex w-full max-w-[760px] flex-col gap-2 border border-dashed px-3 py-3 transition-colors",
                   importDropActive ? "border-acc bg-acc/10" : "border-line-2 bg-bg-1",
                 )}
               >
@@ -1030,7 +1087,7 @@ export function Settings({
                 onChange={(event) => setImportText(event.currentTarget.value)}
                 spellCheck={false}
                 placeholder='{"version":1,"defaultProjectName":"Personal","items":[...]}'
-                className="h-[150px] w-full min-w-0 resize-y border border-line-2 bg-bg-2 px-3 py-2 font-mono text-[11px] leading-[1.5] text-txt outline-none placeholder:text-txt-4 focus:border-acc sm:w-[680px]"
+                className="h-[150px] w-full max-w-[760px] min-w-0 resize-y border border-line-2 bg-bg-2 px-3 py-2 font-mono text-[11px] leading-[1.5] text-txt outline-none placeholder:text-txt-4 focus:border-acc"
               />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">

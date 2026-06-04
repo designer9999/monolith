@@ -27,7 +27,7 @@ I would not build this as a normal web app first, because browser storage, exten
 Start with Tauri 2, React, and TypeScript:
 
 ```bash
-pnpm create tauri-app@latest secret-vault
+npm create tauri-app@latest secret-vault
 cd secret-vault
 ```
 
@@ -36,15 +36,15 @@ Choose:
 ```text
 Frontend: React
 Language: TypeScript
-Package manager: pnpm
+Package manager: npm
 ```
 
 Add UI and app dependencies:
 
 ```bash
-pnpm add @dnd-kit/react @dnd-kit/helpers lucide-react
-pnpm dlx shadcn@latest init
-pnpm tauri add dialog clipboard-manager opener updater
+npm install @dnd-kit/react @dnd-kit/helpers lucide-react
+npx shadcn@latest init
+npm run tauri -- add dialog clipboard-manager opener updater
 ```
 
 Add Rust dependencies from inside `src-tauri`:
@@ -415,9 +415,9 @@ For `tauri.conf.json`, use a strict production CSP. Tauri’s CSP feature reduce
   "version": "0.1.0",
   "identifier": "com.yourname.secretvault",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
     "removeUnusedCommands": true
   },
