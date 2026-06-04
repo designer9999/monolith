@@ -237,6 +237,35 @@ fn is_password_label(label: &str) -> bool {
     label.contains("password") || label.contains("passphrase") || label.contains("pin")
 }
 
+fn password_reuse_key(label: &str) -> Option<&'static str> {
+    let label = label.to_ascii_lowercase();
+    if !is_password_label(&label) {
+        return None;
+    }
+    if matches!(
+        label.as_str(),
+        "password" | "account password" | "login password" | "admin password"
+    ) {
+        return Some("login");
+    }
+    if label.contains("database") {
+        return Some("database");
+    }
+    if label.contains("app") {
+        return Some("app");
+    }
+    if label.contains("recovery") {
+        return Some("recovery");
+    }
+    if label.contains("passphrase") {
+        return Some("passphrase");
+    }
+    if label.contains("pin") {
+        return Some("pin");
+    }
+    Some("password")
+}
+
 fn is_email_label(label: &str) -> bool {
     label.to_ascii_lowercase().contains("email")
 }
@@ -249,8 +278,8 @@ fn is_username_label(label: &str) -> bool {
 fn same_reuse_family(target_label: &str, candidate_label: &str, candidate_type: FieldType) -> bool {
     let target = target_label.to_ascii_lowercase();
     let candidate = candidate_label.to_ascii_lowercase();
-    if is_password_label(&target) {
-        return is_password_label(&candidate);
+    if let Some(target_key) = password_reuse_key(&target) {
+        return password_reuse_key(&candidate) == Some(target_key);
     }
     if is_email_label(&target) {
         return candidate_type == FieldType::Email || is_email_label(&candidate);
@@ -2632,6 +2661,35 @@ mod tests {
             reveal_field(&conn, &key, &password.id).unwrap().value,
             "Shared-GitHub-44!"
         );
+    }
+
+    #[test]
+    fn reusable_password_families_do_not_mix_account_and_database_passwords() {
+        assert!(same_reuse_family(
+            "Password",
+            "Account Password",
+            FieldType::Password
+        ));
+        assert!(same_reuse_family(
+            "Password",
+            "Password",
+            FieldType::Password
+        ));
+        assert!(!same_reuse_family(
+            "Password",
+            "Database Password",
+            FieldType::Password
+        ));
+        assert!(same_reuse_family(
+            "Database Password",
+            "Database Password",
+            FieldType::Password
+        ));
+        assert!(!same_reuse_family(
+            "Database Password",
+            "Password",
+            FieldType::Password
+        ));
     }
 
     #[test]

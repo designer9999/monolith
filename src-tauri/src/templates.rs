@@ -81,10 +81,15 @@ pub fn catalog() -> Vec<Template> {
             group: "Backend",
             fields: vec![
                 F::new("Project URL", false).ty(Url),
+                F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
+                F::new("Publishable Key", false).ty(ApiKey),
+                F::new("Secret Key", true).danger().ty(ApiKey),
                 F::new("Anon Key", true).ty(ApiKey),
                 F::new("Service Role Key", true).danger().ty(ApiKey),
                 F::new("JWT Secret", true).danger(),
                 F::new("Database Password", true),
+                F::new("Direct Connection String", true).danger().ty(Url),
                 F::new("S3 Access Key", true),
                 F::new("S3 Secret Key", true),
             ],
@@ -154,7 +159,7 @@ pub fn catalog() -> Vec<Template> {
             slug: Some("vercel"),
             icon: None,
             color: "#f2f2f2",
-            totp: false,
+            totp: true,
             group: "Hosting",
             fields: vec![
                 F::new("Account Email", false).ty(Email),
@@ -175,6 +180,8 @@ pub fn catalog() -> Vec<Template> {
             totp: false,
             group: "Payments",
             fields: vec![
+                F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("Publishable Key", false),
                 F::new("Secret Key", true).danger().ty(ApiKey),
                 F::new("Restricted Key", true).ty(ApiKey),
@@ -210,6 +217,8 @@ pub fn catalog() -> Vec<Template> {
             totp: true,
             group: "Infra",
             fields: vec![
+                F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("Access Key ID", false),
                 F::new("Secret Access Key", true).danger().ty(ApiKey),
                 F::new("Region", false),
@@ -226,6 +235,8 @@ pub fn catalog() -> Vec<Template> {
             totp: false,
             group: "AI",
             fields: vec![
+                F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("API Key", true).danger().ty(ApiKey),
                 F::new("Organization ID", false),
                 F::new("Project ID", false),
@@ -470,6 +481,8 @@ pub fn catalog() -> Vec<Template> {
             totp: false,
             group: "Backend",
             fields: vec![
+                F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("Database URL", true).danger().ty(Url),
                 F::new("Direct URL", true).ty(Url),
                 F::new("Accelerate API Key", true).ty(ApiKey),
@@ -486,6 +499,8 @@ pub fn catalog() -> Vec<Template> {
             totp: false,
             group: "AI",
             fields: vec![
+                F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("API Key", true).danger().ty(ApiKey),
                 F::new("Workspace ID", false),
                 F::new("Organization ID", false),
@@ -502,6 +517,8 @@ pub fn catalog() -> Vec<Template> {
             totp: false,
             group: "Backend",
             fields: vec![
+                F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("API Key", true).danger().ty(ApiKey),
                 F::new("From Email", false).ty(Email),
                 F::new("Webhook Signing Secret", true),
@@ -533,10 +550,11 @@ pub fn catalog() -> Vec<Template> {
             totp: true,
             group: "Auth",
             fields: vec![
+                F::new("Account Email", false).ty(Email),
+                F::new("Password", true).danger(),
                 F::new("Client ID", false),
                 F::new("Client Secret", true).danger().ty(ApiKey),
                 F::new("Issuer URL", false).ty(Url),
-                F::new("Account Email", false).ty(Email),
             ],
         },
     ]
@@ -545,4 +563,97 @@ pub fn catalog() -> Vec<Template> {
 /// Look up a template by id.
 pub fn find(id: &str) -> Option<Template> {
     catalog().into_iter().find(|t| t.id == id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn labels(id: &str) -> Vec<&'static str> {
+        find(id)
+            .unwrap_or_else(|| panic!("missing template {id}"))
+            .fields
+            .into_iter()
+            .map(|field| field.label)
+            .collect()
+    }
+
+    fn has_login_email(labels: &[&str]) -> bool {
+        labels.iter().any(|label| {
+            matches!(
+                *label,
+                "Account Email" | "Admin Email" | "Login Email" | "Email / Username"
+            )
+        })
+    }
+
+    fn has_login_password(labels: &[&str]) -> bool {
+        labels
+            .iter()
+            .any(|label| matches!(*label, "Password" | "Account Password"))
+    }
+
+    #[test]
+    fn account_backed_templates_have_login_fields() {
+        let account_templates = [
+            "supabase",
+            "google",
+            "google-account",
+            "github",
+            "vercel",
+            "stripe",
+            "cloudflare",
+            "aws",
+            "openai",
+            "shopify",
+            "login",
+            "apple",
+            "mega",
+            "topaz",
+            "huggingface",
+            "instagram",
+            "domain",
+            "prisma",
+            "claude",
+            "resend",
+            "runpod",
+            "zeroid",
+        ];
+
+        for id in account_templates {
+            let labels = labels(id);
+            assert!(has_login_email(&labels), "{id} missing login email field");
+            assert!(
+                has_login_password(&labels),
+                "{id} missing login password field"
+            );
+        }
+    }
+
+    #[test]
+    fn supabase_keeps_service_specific_secrets_plus_account_login() {
+        let labels = labels("supabase");
+        for required in [
+            "Project URL",
+            "Account Email",
+            "Password",
+            "Publishable Key",
+            "Secret Key",
+            "Anon Key",
+            "Service Role Key",
+            "JWT Secret",
+            "Database Password",
+            "Direct Connection String",
+            "S3 Access Key",
+            "S3 Secret Key",
+        ] {
+            assert!(labels.contains(&required), "supabase missing {required}");
+        }
+    }
+
+    #[test]
+    fn vercel_supports_authenticator_app_totp() {
+        let vercel = find("vercel").expect("missing vercel template");
+        assert!(vercel.totp);
+    }
 }

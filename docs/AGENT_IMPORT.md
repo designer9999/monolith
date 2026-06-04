@@ -130,6 +130,7 @@ Use these `templateId` values:
 Field labels must match the selected template. Useful common mappings:
 
 - `login`: `URL`, `Email / Username`, `Password`
+- `supabase`: `Project URL`, `Account Email`, `Password`, `Publishable Key`, `Secret Key`, `Anon Key`, `Service Role Key`, `JWT Secret`, `Database Password`, `Direct Connection String`, `S3 Access Key`, `S3 Secret Key`
 - `google-account`: `Account Email`, `Password`, `Recovery Email`, `Recovery Phone`, `App Password`, `Recovery Key`, `Backup Codes`, `Notes`
 - `google`: Google Cloud/OAuth/API credentials: `Client ID`, `Client Secret`, `API Key`, `Service Account JSON`, `Account Email`, `Account Password`
 - `apple`: `Account Email`, `Password`, `Recovery Email`, `Trusted Phone`, `Recovery Key`, `Backup Codes`
@@ -138,10 +139,17 @@ Field labels must match the selected template. Useful common mappings:
 - `huggingface`: `Username`, `Account Email`, `Password`, `Access Token`, `Organization`
 - `instagram`: `Username`, `Account Email`, `Password`, `Recovery Email`, `Phone`, `Backup Codes`
 - `github`: `Username`, `Account Email`, `Password`, `Personal Access Token`, `SSH Private Key`, `Webhook Secret`, `OAuth Client ID`, `OAuth Secret`
-- `zeroid`: `Client ID`, `Client Secret`, `Issuer URL`, `Account Email`
-- `openai`: `API Key`, `Organization ID`, `Project ID`
+- `zeroid`: `Account Email`, `Password`, `Client ID`, `Client Secret`, `Issuer URL`
+- `openai`: `Account Email`, `Password`, `API Key`, `Organization ID`, `Project ID`
 - `vercel`: `Account Email`, `Password`, `Access Token`, `Team ID`, `Project ID`, `Deploy Hook URL`
+- `stripe`: `Account Email`, `Password`, `Publishable Key`, `Secret Key`, `Restricted Key`, `Webhook Secret`, `Mode`
 - `cloudflare`: `Account Email`, `Password`, `API Token`, `Global API Key`, `Zone ID`, `Account ID`
+- `aws`: `Account Email`, `Password`, `Access Key ID`, `Secret Access Key`, `Region`, `Account ID`
+- `shopify`: `Store URL`, `Admin Email`, `Password`, `Admin API Token`
+- `domain`: `Registrar`, `Login Email`, `Password`, `EPP / Auth Code`, `Renewal Date`
+- `prisma`: `Account Email`, `Password`, `Database URL`, `Direct URL`, `Accelerate API Key`, `Project ID`
+- `claude`: `Account Email`, `Password`, `API Key`, `Workspace ID`, `Organization ID`
+- `resend`: `Account Email`, `Password`, `API Key`, `From Email`, `Webhook Signing Secret`
 - `runpod`: `API Key`, `Endpoint ID`, `Account Email`, `Password`
 - `note`: `Note`
 
